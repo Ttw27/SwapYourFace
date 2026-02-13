@@ -1,0 +1,15 @@
+api_version = "2024-10"
+
+[[extensions]]
+name = "Party Builder"
+handle = "party-builder"
+type = "theme"
+
+  [extensions.capabilities]
+  ajax = true
+  block_progress = false
+  cookie_scope = "domain"
+
+  [[extensions.targeting]]
+  target = "section"
+  multiple = false
