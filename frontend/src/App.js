@@ -8,6 +8,7 @@ import { useStore } from "@/store/useStore";
 import HomePage from "@/pages/HomePage";
 import GalleryPage from "@/pages/GalleryPage";
 import BuilderPage from "@/pages/BuilderPage";
+import EmbedBuilderPage from "@/pages/EmbedBuilderPage";
 import CartPage from "@/pages/CartPage";
 import AdminPage from "@/pages/AdminPage";
 import FAQPage from "@/pages/FAQPage";
