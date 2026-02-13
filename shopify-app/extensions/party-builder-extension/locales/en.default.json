@@ -1,0 +1,18 @@
+{
+  "en": {
+    "party_builder": {
+      "title": "Create Your Party T-Shirt",
+      "description": "Upload a photo, choose a hilarious template, and create custom t-shirts for your party!",
+      "steps": {
+        "template": "Choose Template",
+        "photo": "Upload Photo",
+        "customize": "Customize",
+        "sizes": "Select Sizes"
+      },
+      "gdpr_consent": "I consent to my photo being used for order fulfilment only.",
+      "upload_prompt": "Click to upload a photo",
+      "back_print": "Add name on the back",
+      "add_to_cart": "Add to Cart"
+    }
+  }
+}
