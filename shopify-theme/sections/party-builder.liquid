@@ -1,0 +1,666 @@
+{% comment %}
+  PartyTees Party Builder - Native Shopify Theme Section
+  Add this file to: theme/sections/party-builder.liquid
+{% endcomment %}
+
+{{ 'party-builder-native.css' | asset_url | stylesheet_tag }}
+
+<div id="party-builder" class="party-builder" data-api-url="https://party-tees.preview.emergentagent.com/api">
+  
+  <!-- Mode Selector -->
+  <div class="pb-mode-selector">
+    <button class="pb-mode-btn active" data-mode="bulk">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20.38 3.46L16 2a4 4 0 01-8 0L3.62 3.46a2 2 0 00-1.34 2.23l.58 3.47a1 1 0 00.99.84H6v10c0 1.1.9 2 2 2h8a2 2 0 002-2V10h2.15a1 1 0 00.99-.84l.58-3.47a2 2 0 00-1.34-2.23z"/></svg>
+      Bulk Order (Same Design)
+    </button>
+    <button class="pb-mode-btn" data-mode="multi">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg>
+      Multi-Design (Per Person)
+    </button>
+  </div>
+
+  <!-- Progress Steps -->
+  <div class="pb-steps">
+    <button class="pb-step active" data-step="1"><span>1</span> Template</button>
+    <button class="pb-step" data-step="2"><span>2</span> Photo</button>
+    <button class="pb-step" data-step="3"><span>3</span> Text</button>
+    <button class="pb-step" data-step="4"><span>4</span> Sizes</button>
+  </div>
+
+  <!-- Main Content -->
+  <div class="pb-content">
+    
+    <!-- Preview Panel -->
+    <div class="pb-preview-panel">
+      <h3>Preview</h3>
+      <div class="pb-canvas" id="pb-canvas">
+        <img id="pb-template-img" class="pb-template-img" src="" alt="Template" style="display:none;">
+        <img id="pb-head-img" class="pb-head-img" src="" alt="Head" style="display:none;">
+        <div id="pb-title-text" class="pb-title-text"></div>
+        <div id="pb-subtitle-text" class="pb-subtitle-text"></div>
+      </div>
+      
+      <!-- Head Controls -->
+      <div id="pb-head-controls" class="pb-head-controls" style="display:none;">
+        <div class="pb-control-group">
+          <label>Scale</label>
+          <input type="range" id="pb-scale" min="0.2" max="2" step="0.1" value="1">
+        </div>
+        <div class="pb-control-group">
+          <label>Rotate</label>
+          <input type="range" id="pb-rotate" min="-180" max="180" step="5" value="0">
+        </div>
+        <p class="pb-drag-hint">Drag the head to reposition</p>
+      </div>
+    </div>
+
+    <!-- Controls Panel -->
+    <div class="pb-controls-panel">
+      
+      <!-- Step 1: Templates -->
+      <div class="pb-step-content active" data-step="1">
+        <h3>1. Choose a Template</h3>
+        <div class="pb-templates" id="pb-templates">
+          <!-- Templates loaded via JS -->
+          <div class="pb-loading">Loading templates...</div>
+        </div>
+      </div>
+
+      <!-- Step 2: Photo Upload -->
+      <div class="pb-step-content" data-step="2">
+        <h3>2. Upload a Photo</h3>
+        
+        <div class="pb-gdpr">
+          <label>
+            <input type="checkbox" id="pb-gdpr-consent">
+            <span>I consent to my photo being used for order fulfilment only.</span>
+          </label>
+        </div>
+        
+        <div id="pb-upload-area" class="pb-upload-area disabled">
+          <input type="file" id="pb-file-input" accept="image/*" style="display:none;">
+          <div class="pb-upload-prompt" id="pb-upload-prompt">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <p>Click to upload a photo</p>
+            <span>JPG, PNG up to 10MB</span>
+          </div>
+          <div class="pb-upload-status" id="pb-upload-status" style="display:none;">
+            <div class="pb-spinner"></div>
+            <p id="pb-upload-text">Uploading...</p>
+          </div>
+          <div class="pb-upload-success" id="pb-upload-success" style="display:none;">
+            <img id="pb-uploaded-preview" src="" alt="Preview">
+            <p>✓ Photo processed!</p>
+            <button type="button" id="pb-change-photo" class="pb-btn-outline">Change Photo</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 3: Text -->
+      <div class="pb-step-content" data-step="3">
+        <h3>3. Add Your Text</h3>
+        
+        <div class="pb-input-group">
+          <label for="pb-title">Main Title</label>
+          <input type="text" id="pb-title" placeholder="e.g., DAVE'S STAG DO">
+        </div>
+        
+        <div class="pb-input-group">
+          <label for="pb-subtitle">Subtitle</label>
+          <input type="text" id="pb-subtitle" placeholder="e.g., BENIDORM 2025">
+        </div>
+        
+        <div class="pb-back-print">
+          <label class="pb-checkbox-label">
+            <input type="checkbox" id="pb-back-print-check">
+            <span>Add name on the back <strong>(+£2.50 per shirt)</strong></span>
+          </label>
+          
+          <div id="pb-back-name-section" class="pb-back-name-section" style="display:none;">
+            <div class="pb-back-mode-btns">
+              <button type="button" class="pb-back-mode-btn active" data-backmode="single">Same for all</button>
+              <button type="button" class="pb-back-mode-btn" data-backmode="different">Different names</button>
+            </div>
+            <input type="text" id="pb-back-name-single" placeholder="Name for all shirts...">
+            <textarea id="pb-back-name-list" placeholder="One name per line..." rows="4" style="display:none;"></textarea>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 4: Sizes -->
+      <div class="pb-step-content" data-step="4">
+        <h3>4. Select Sizes</h3>
+        
+        <div class="pb-sizes">
+          <div class="pb-size-item" data-size="S">
+            <span class="pb-size-label">S</span>
+            <div class="pb-qty">
+              <button type="button" class="pb-qty-btn minus">-</button>
+              <input type="number" value="0" min="0" class="pb-qty-input">
+              <button type="button" class="pb-qty-btn plus">+</button>
+            </div>
+          </div>
+          <div class="pb-size-item" data-size="M">
+            <span class="pb-size-label">M</span>
+            <div class="pb-qty">
+              <button type="button" class="pb-qty-btn minus">-</button>
+              <input type="number" value="0" min="0" class="pb-qty-input">
+              <button type="button" class="pb-qty-btn plus">+</button>
+            </div>
+          </div>
+          <div class="pb-size-item" data-size="L">
+            <span class="pb-size-label">L</span>
+            <div class="pb-qty">
+              <button type="button" class="pb-qty-btn minus">-</button>
+              <input type="number" value="0" min="0" class="pb-qty-input">
+              <button type="button" class="pb-qty-btn plus">+</button>
+            </div>
+          </div>
+          <div class="pb-size-item" data-size="XL">
+            <span class="pb-size-label">XL</span>
+            <div class="pb-qty">
+              <button type="button" class="pb-qty-btn minus">-</button>
+              <input type="number" value="0" min="0" class="pb-qty-input">
+              <button type="button" class="pb-qty-btn plus">+</button>
+            </div>
+          </div>
+          <div class="pb-size-item" data-size="2XL">
+            <span class="pb-size-label">2XL</span>
+            <div class="pb-qty">
+              <button type="button" class="pb-qty-btn minus">-</button>
+              <input type="number" value="0" min="0" class="pb-qty-input">
+              <button type="button" class="pb-qty-btn plus">+</button>
+            </div>
+          </div>
+          <div class="pb-size-item" data-size="3XL">
+            <span class="pb-size-label">3XL</span>
+            <div class="pb-qty">
+              <button type="button" class="pb-qty-btn minus">-</button>
+              <input type="number" value="0" min="0" class="pb-qty-input">
+              <button type="button" class="pb-qty-btn plus">+</button>
+            </div>
+          </div>
+        </div>
+        
+        <div class="pb-total">
+          <div class="pb-total-row">
+            <span>Quantity</span>
+            <span id="pb-total-qty">0 shirts</span>
+          </div>
+          <div class="pb-total-row">
+            <span>Price per shirt</span>
+            <span id="pb-price-each">£19.99</span>
+          </div>
+          <div class="pb-total-row pb-total-final">
+            <span>Total</span>
+            <span id="pb-total-price">£0.00</span>
+          </div>
+        </div>
+        
+        <button type="button" id="pb-add-to-cart" class="pb-btn-primary pb-btn-cart" disabled>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg>
+          Add to Cart
+        </button>
+      </div>
+
+      <!-- Navigation -->
+      <div class="pb-navigation">
+        <button type="button" id="pb-prev" class="pb-btn-outline" style="display:none;">Back</button>
+        <button type="button" id="pb-next" class="pb-btn-primary">Next</button>
+      </div>
+      
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const API_URL = 'https://party-tees.preview.emergentagent.com/api';
+  const BASE_PRICE = 19.99;
+  const BACK_PRICE = 2.50;
+  
+  // State
+  let state = {
+    step: 1,
+    mode: 'bulk',
+    templates: [],
+    selectedTemplate: null,
+    headCutout: null,
+    originalPhoto: null,
+    headPlacement: { x: 50, y: 15, scale: 1, rotation: 0 },
+    titleText: '',
+    subtitleText: '',
+    hasBackPrint: false,
+    backNameMode: 'single',
+    backName: '',
+    backNames: [],
+    sizes: { S: 0, M: 0, L: 0, XL: 0, '2XL': 0, '3XL': 0 }
+  };
+  
+  // DOM Elements
+  const elements = {};
+  
+  function init() {
+    cacheElements();
+    bindEvents();
+    loadTemplates();
+  }
+  
+  function cacheElements() {
+    elements.modeButtons = document.querySelectorAll('.pb-mode-btn');
+    elements.stepButtons = document.querySelectorAll('.pb-step');
+    elements.stepContents = document.querySelectorAll('.pb-step-content');
+    elements.templatesContainer = document.getElementById('pb-templates');
+    elements.templateImg = document.getElementById('pb-template-img');
+    elements.headImg = document.getElementById('pb-head-img');
+    elements.headControls = document.getElementById('pb-head-controls');
+    elements.titleText = document.getElementById('pb-title-text');
+    elements.subtitleText = document.getElementById('pb-subtitle-text');
+    elements.gdprConsent = document.getElementById('pb-gdpr-consent');
+    elements.uploadArea = document.getElementById('pb-upload-area');
+    elements.fileInput = document.getElementById('pb-file-input');
+    elements.uploadPrompt = document.getElementById('pb-upload-prompt');
+    elements.uploadStatus = document.getElementById('pb-upload-status');
+    elements.uploadSuccess = document.getElementById('pb-upload-success');
+    elements.uploadedPreview = document.getElementById('pb-uploaded-preview');
+    elements.changePhoto = document.getElementById('pb-change-photo');
+    elements.titleInput = document.getElementById('pb-title');
+    elements.subtitleInput = document.getElementById('pb-subtitle');
+    elements.backPrintCheck = document.getElementById('pb-back-print-check');
+    elements.backNameSection = document.getElementById('pb-back-name-section');
+    elements.backModeButtons = document.querySelectorAll('.pb-back-mode-btn');
+    elements.backNameSingle = document.getElementById('pb-back-name-single');
+    elements.backNameList = document.getElementById('pb-back-name-list');
+    elements.scaleSlider = document.getElementById('pb-scale');
+    elements.rotateSlider = document.getElementById('pb-rotate');
+    elements.sizeItems = document.querySelectorAll('.pb-size-item');
+    elements.totalQty = document.getElementById('pb-total-qty');
+    elements.priceEach = document.getElementById('pb-price-each');
+    elements.totalPrice = document.getElementById('pb-total-price');
+    elements.addToCart = document.getElementById('pb-add-to-cart');
+    elements.prevBtn = document.getElementById('pb-prev');
+    elements.nextBtn = document.getElementById('pb-next');
+  }
+  
+  function bindEvents() {
+    // Mode selection
+    elements.modeButtons.forEach(btn => {
+      btn.addEventListener('click', () => setMode(btn.dataset.mode));
+    });
+    
+    // Step navigation
+    elements.stepButtons.forEach(btn => {
+      btn.addEventListener('click', () => goToStep(parseInt(btn.dataset.step)));
+    });
+    
+    elements.prevBtn.addEventListener('click', () => goToStep(state.step - 1));
+    elements.nextBtn.addEventListener('click', () => goToStep(state.step + 1));
+    
+    // GDPR consent
+    elements.gdprConsent.addEventListener('change', (e) => {
+      elements.uploadArea.classList.toggle('disabled', !e.target.checked);
+    });
+    
+    // File upload
+    elements.uploadArea.addEventListener('click', () => {
+      if (!elements.uploadArea.classList.contains('disabled')) {
+        elements.fileInput.click();
+      }
+    });
+    
+    elements.fileInput.addEventListener('change', handleFileUpload);
+    elements.changePhoto.addEventListener('click', resetPhoto);
+    
+    // Text inputs
+    elements.titleInput.addEventListener('input', (e) => {
+      state.titleText = e.target.value;
+      updatePreview();
+    });
+    
+    elements.subtitleInput.addEventListener('input', (e) => {
+      state.subtitleText = e.target.value;
+      updatePreview();
+    });
+    
+    // Back print
+    elements.backPrintCheck.addEventListener('change', (e) => {
+      state.hasBackPrint = e.target.checked;
+      elements.backNameSection.style.display = e.target.checked ? 'block' : 'none';
+      updateTotal();
+    });
+    
+    elements.backModeButtons.forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.backNameMode = btn.dataset.backmode;
+        elements.backModeButtons.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        elements.backNameSingle.style.display = state.backNameMode === 'single' ? 'block' : 'none';
+        elements.backNameList.style.display = state.backNameMode === 'different' ? 'block' : 'none';
+      });
+    });
+    
+    elements.backNameSingle.addEventListener('input', (e) => {
+      state.backName = e.target.value;
+    });
+    
+    elements.backNameList.addEventListener('input', (e) => {
+      state.backNames = e.target.value.split('\n').filter(n => n.trim());
+    });
+    
+    // Head controls
+    elements.scaleSlider.addEventListener('input', (e) => {
+      state.headPlacement.scale = parseFloat(e.target.value);
+      updateHeadPosition();
+    });
+    
+    elements.rotateSlider.addEventListener('input', (e) => {
+      state.headPlacement.rotation = parseInt(e.target.value);
+      updateHeadPosition();
+    });
+    
+    // Make head draggable
+    let isDragging = false;
+    let startX, startY;
+    
+    elements.headImg.addEventListener('mousedown', (e) => {
+      isDragging = true;
+      startX = e.clientX - state.headPlacement.x;
+      startY = e.clientY - state.headPlacement.y;
+      e.preventDefault();
+    });
+    
+    document.addEventListener('mousemove', (e) => {
+      if (!isDragging) return;
+      const canvas = document.getElementById('pb-canvas');
+      const rect = canvas.getBoundingClientRect();
+      state.headPlacement.x = ((e.clientX - rect.left) / rect.width) * 100;
+      state.headPlacement.y = ((e.clientY - rect.top) / rect.height) * 100;
+      updateHeadPosition();
+    });
+    
+    document.addEventListener('mouseup', () => {
+      isDragging = false;
+    });
+    
+    // Size quantity controls
+    elements.sizeItems.forEach(item => {
+      const size = item.dataset.size;
+      const input = item.querySelector('.pb-qty-input');
+      const minusBtn = item.querySelector('.minus');
+      const plusBtn = item.querySelector('.plus');
+      
+      input.addEventListener('change', (e) => {
+        state.sizes[size] = Math.max(0, parseInt(e.target.value) || 0);
+        e.target.value = state.sizes[size];
+        updateTotal();
+      });
+      
+      minusBtn.addEventListener('click', () => {
+        state.sizes[size] = Math.max(0, state.sizes[size] - 1);
+        input.value = state.sizes[size];
+        updateTotal();
+      });
+      
+      plusBtn.addEventListener('click', () => {
+        state.sizes[size]++;
+        input.value = state.sizes[size];
+        updateTotal();
+      });
+    });
+    
+    // Add to cart
+    elements.addToCart.addEventListener('click', addToCart);
+  }
+  
+  async function loadTemplates() {
+    try {
+      const res = await fetch(`${API_URL}/templates`);
+      state.templates = await res.json();
+      renderTemplates();
+    } catch (error) {
+      console.error('Failed to load templates:', error);
+      elements.templatesContainer.innerHTML = '<p class="pb-error">Failed to load templates. Please refresh.</p>';
+    }
+  }
+  
+  function renderTemplates() {
+    elements.templatesContainer.innerHTML = state.templates.map(t => `
+      <button type="button" class="pb-template-card" data-id="${t.id}">
+        <div class="pb-template-img-wrap">
+          <img src="${t.body_image_url}" alt="${t.name}">
+        </div>
+        <span class="pb-template-name">${t.name}</span>
+        <span class="pb-template-badge">${t.category}</span>
+      </button>
+    `).join('');
+    
+    // Bind click events
+    document.querySelectorAll('.pb-template-card').forEach(card => {
+      card.addEventListener('click', () => selectTemplate(card.dataset.id));
+    });
+  }
+  
+  function selectTemplate(id) {
+    state.selectedTemplate = state.templates.find(t => t.id === id);
+    
+    // Update UI
+    document.querySelectorAll('.pb-template-card').forEach(card => {
+      card.classList.toggle('selected', card.dataset.id === id);
+    });
+    
+    // Update preview
+    if (state.selectedTemplate) {
+      elements.templateImg.src = state.selectedTemplate.body_image_url;
+      elements.templateImg.style.display = 'block';
+      
+      if (state.selectedTemplate.head_placement) {
+        state.headPlacement = {
+          x: state.selectedTemplate.head_placement.x * 100,
+          y: state.selectedTemplate.head_placement.y * 100,
+          scale: state.selectedTemplate.head_placement.scale,
+          rotation: state.selectedTemplate.head_placement.rotation || 0
+        };
+        elements.scaleSlider.value = state.headPlacement.scale;
+        elements.rotateSlider.value = state.headPlacement.rotation;
+        updateHeadPosition();
+      }
+    }
+  }
+  
+  async function handleFileUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    if (!file.type.startsWith('image/')) {
+      alert('Please upload an image file');
+      return;
+    }
+    
+    // Show loading
+    elements.uploadPrompt.style.display = 'none';
+    elements.uploadStatus.style.display = 'block';
+    document.getElementById('pb-upload-text').textContent = 'Uploading...';
+    
+    try {
+      // Upload
+      const formData = new FormData();
+      formData.append('file', file);
+      
+      const uploadRes = await fetch(`${API_URL}/upload/photo`, {
+        method: 'POST',
+        body: formData
+      });
+      const uploadData = await uploadRes.json();
+      state.originalPhoto = uploadData;
+      
+      // Remove background
+      document.getElementById('pb-upload-text').textContent = 'Processing...';
+      
+      const bgFormData = new FormData();
+      bgFormData.append('file_id', uploadData.id);
+      
+      const bgRes = await fetch(`${API_URL}/upload/remove-background`, {
+        method: 'POST',
+        body: bgFormData
+      });
+      const bgData = await bgRes.json();
+      state.headCutout = bgData;
+      
+      // Show success
+      elements.uploadStatus.style.display = 'none';
+      elements.uploadSuccess.style.display = 'block';
+      elements.uploadedPreview.src = `https://party-tees.preview.emergentagent.com${bgData.head_url}`;
+      
+      // Update preview
+      elements.headImg.src = `https://party-tees.preview.emergentagent.com${bgData.head_url}`;
+      elements.headImg.style.display = 'block';
+      elements.headControls.style.display = 'block';
+      updateHeadPosition();
+      
+    } catch (error) {
+      console.error('Upload error:', error);
+      alert('Failed to process photo. Please try again.');
+      elements.uploadStatus.style.display = 'none';
+      elements.uploadPrompt.style.display = 'block';
+    }
+  }
+  
+  function resetPhoto() {
+    state.headCutout = null;
+    state.originalPhoto = null;
+    elements.fileInput.value = '';
+    elements.uploadSuccess.style.display = 'none';
+    elements.uploadPrompt.style.display = 'block';
+    elements.headImg.style.display = 'none';
+    elements.headControls.style.display = 'none';
+  }
+  
+  function updatePreview() {
+    elements.titleText.textContent = state.titleText.toUpperCase();
+    elements.subtitleText.textContent = state.subtitleText.toUpperCase();
+  }
+  
+  function updateHeadPosition() {
+    elements.headImg.style.left = `${state.headPlacement.x}%`;
+    elements.headImg.style.top = `${state.headPlacement.y}%`;
+    elements.headImg.style.transform = `translate(-50%, -50%) scale(${state.headPlacement.scale}) rotate(${state.headPlacement.rotation}deg)`;
+  }
+  
+  function updateTotal() {
+    const totalQty = Object.values(state.sizes).reduce((sum, qty) => sum + qty, 0);
+    const priceEach = BASE_PRICE + (state.hasBackPrint ? BACK_PRICE : 0);
+    const total = totalQty * priceEach;
+    
+    elements.totalQty.textContent = `${totalQty} shirt${totalQty !== 1 ? 's' : ''}`;
+    elements.priceEach.textContent = `£${priceEach.toFixed(2)}`;
+    elements.totalPrice.textContent = `£${total.toFixed(2)}`;
+    elements.addToCart.disabled = totalQty === 0;
+  }
+  
+  function setMode(mode) {
+    state.mode = mode;
+    elements.modeButtons.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+  }
+  
+  function goToStep(step) {
+    if (step < 1 || step > 4) return;
+    
+    state.step = step;
+    
+    // Update step buttons
+    elements.stepButtons.forEach(btn => {
+      const btnStep = parseInt(btn.dataset.step);
+      btn.classList.toggle('active', btnStep === step);
+      btn.classList.toggle('completed', btnStep < step);
+    });
+    
+    // Update step content
+    elements.stepContents.forEach(content => {
+      content.classList.toggle('active', parseInt(content.dataset.step) === step);
+    });
+    
+    // Update navigation
+    elements.prevBtn.style.display = step > 1 ? 'block' : 'none';
+    elements.nextBtn.style.display = step < 4 ? 'block' : 'none';
+  }
+  
+  async function addToCart() {
+    const totalQty = Object.values(state.sizes).reduce((sum, qty) => sum + qty, 0);
+    if (totalQty === 0) return;
+    
+    elements.addToCart.disabled = true;
+    elements.addToCart.innerHTML = '<span class="pb-spinner-small"></span> Adding...';
+    
+    try {
+      // Add each size as a line item to Shopify cart
+      for (const [size, qty] of Object.entries(state.sizes)) {
+        if (qty === 0) continue;
+        
+        // You'll need to map sizes to your Shopify variant IDs
+        // For now, we'll use the product handle and properties
+        const properties = {
+          'Template': state.selectedTemplate?.name || 'Custom',
+          'Title Text': state.titleText,
+          'Subtitle Text': state.subtitleText,
+          'Size': size,
+          'Back Print': state.hasBackPrint ? 'Yes' : 'No',
+          'Back Name': state.hasBackPrint ? (state.backNameMode === 'single' ? state.backName : 'See order notes') : '',
+          '_head_id': state.headCutout?.id || '',
+          '_photo_id': state.originalPhoto?.id || ''
+        };
+        
+        // Add to Shopify cart
+        // Note: Replace YOUR_VARIANT_ID with actual variant IDs from your product
+        await fetch('/cart/add.js', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            // id: getVariantId(size), // Uncomment when you have variant IDs
+            quantity: qty,
+            properties: properties
+          })
+        });
+      }
+      
+      // Redirect to cart
+      window.location.href = '/cart';
+      
+    } catch (error) {
+      console.error('Add to cart error:', error);
+      alert('Added to cart! (Note: Configure Shopify product variant IDs for full integration)');
+      elements.addToCart.disabled = false;
+      elements.addToCart.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/></svg> Add to Cart';
+    }
+  }
+  
+  // Initialize when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
+{% schema %}
+{
+  "name": "Party Builder",
+  "tag": "section",
+  "class": "party-builder-section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading",
+      "default": "Create Your Party T-Shirt"
+    }
+  ],
+  "presets": [
+    {
+      "name": "Party Builder"
+    }
+  ]
+}
+{% endschema %}
