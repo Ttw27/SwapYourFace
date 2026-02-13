@@ -21,6 +21,8 @@ import Footer from "@/components/Footer";
 
 function App() {
   const { fetchTemplates, fetchPricing } = useStore();
+  const location = window.location;
+  const isEmbed = location.pathname === '/embed';
 
   useEffect(() => {
     // Seed templates and fetch data on load
@@ -40,6 +42,20 @@ function App() {
     initData();
   }, [fetchTemplates, fetchPricing]);
 
+  // Render embed version without navbar/footer
+  if (isEmbed) {
+    return (
+      <div className="min-h-screen">
+        <BrowserRouter>
+          <Routes>
+            <Route path="/embed" element={<EmbedBuilderPage />} />
+          </Routes>
+        </BrowserRouter>
+        <Toaster position="top-right" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen flex flex-col">
       <BrowserRouter>
@@ -49,6 +65,7 @@ function App() {
             <Route path="/" element={<HomePage />} />
             <Route path="/gallery" element={<GalleryPage />} />
             <Route path="/builder" element={<BuilderPage />} />
+            <Route path="/embed" element={<EmbedBuilderPage />} />
             <Route path="/cart" element={<CartPage />} />
             <Route path="/admin" element={<AdminPage />} />
             <Route path="/faq" element={<FAQPage />} />
