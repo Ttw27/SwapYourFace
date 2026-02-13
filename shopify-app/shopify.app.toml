@@ -1,0 +1,24 @@
+# Shopify App Configuration
+# This file is used by Shopify CLI
+
+name = "PartyTees Builder"
+client_id = "" # Add your Client ID from Partner Dashboard
+
+[access_scopes]
+# Scopes needed for the app
+scopes = "write_products,read_products"
+
+[auth]
+redirect_urls = [
+  "https://party-tees.preview.emergentagent.com/api/shopify/callback"
+]
+
+[webhooks]
+api_version = "2024-10"
+
+[pos]
+embedded = false
+
+[build]
+automatically_update_urls_on_dev = true
+include_config_on_deploy = true
