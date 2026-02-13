@@ -74,8 +74,29 @@ Store original uploads and print-ready PNG files for admin download.
 - [ ] Design save/reload feature
 - [ ] Admin bulk order export
 
+## Shopify Integration (Added Feb 13, 2026)
+A complete Shopify Theme App Extension has been created at `/app/shopify-app/`
+
+### What's Included:
+- Theme App Extension with Party Builder block
+- React-based builder compiled for Shopify themes
+- Liquid template with configurable settings
+- CSS styling matching the standalone site
+- Shopify cart integration (AJAX /cart/add.js)
+
+### To Deploy:
+1. Create Shopify Partner account
+2. Create an app in Partner Dashboard
+3. Deploy extension via Shopify CLI
+4. Create product with size variants
+5. Add Party Builder block to theme
+
+See `/app/shopify-app/SETUP_GUIDE.md` for detailed instructions.
+
 ## Next Action Items
-1. Provide remove.bg API key to enable real background removal
-2. Add more template assets (especially Hen party templates)
-3. Consider Stripe integration for payments
-4. Set up AWS S3 for production file storage
+1. **Shopify Setup**: Create Partner account and deploy the Theme App Extension
+2. **Product Setup**: Create "Custom Party T-Shirt" product with size variants in Shopify
+3. **Variant IDs**: Update variant IDs in the extension code
+4. **remove.bg API key**: Add to enable real background removal
+5. Add more template assets (especially Hen party templates)
+6. Set up AWS S3 for production file storage
