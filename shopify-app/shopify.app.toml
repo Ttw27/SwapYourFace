@@ -10,7 +10,7 @@ scopes = "write_products,read_products"
 
 [auth]
 redirect_urls = [
-  "https://party-tees.preview.emergentagent.com/api/shopify/callback"
+  "https://party-shirt-builder.preview.emergentagent.com/api/shopify/callback"
 ]
 
 [webhooks]

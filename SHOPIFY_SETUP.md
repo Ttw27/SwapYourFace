@@ -84,7 +84,7 @@ const PRODUCT_HANDLE = 'your-actual-product-handle';
 ## Test It:
 
 1. Add your Storefront Access Token
-2. Go to https://party-tees.preview.emergentagent.com/builder
+2. Go to https://party-shirt-builder.preview.emergentagent.com/builder
 3. Create a design
 4. Add to cart
 5. Click "Checkout with Shopify"

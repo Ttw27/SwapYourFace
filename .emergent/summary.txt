@@ -1,0 +1,156 @@
+<analysis>**original_problem_statement:**
+The user wants to create a Shopify store with an embedded custom product builder for printed t-shirts for stag/hen parties.
+
+**PRODUCT REQUIREMENTS:**
+- **Two Modes:**
+    1.  **Bulk Mode:** A single shared design for a group, with quantity controls for different sizes and an option for a list of names for back printing.
+    2.  **Multi-Design Mode:** Different designs for each person within a single order.
+- **Core Features:**
+    - A gallery of pre-made t-shirt design templates (e.g., Stag, Hen).
+    - Customers can upload a photo, from which the app should automatically extract the head.
+    - A canvas editor where users can position, scale, and rotate the extracted head onto the template.
+    - Users can edit text fields on the design.
+    - An optional add-on for printing a name and number on the back.
+- **Technical & Integration:**
+    - The builder must integrate with the Shopify cart, adding configured items with all custom details as line item properties.
+    - The final output must include print-ready PNG files (front and back) and the original uploaded photo for the store owner.
+    - These assets must be stored persistently (e.g., S3, Cloudinary) and be downloadable from a simple admin dashboard.
+- **MVP Goal:** A functional flow from template gallery -> builder -> add to cart -> Shopify checkout -> admin download page.
+
+**User's preferred language**: English
+
+**what currently exists?**
+A standalone full-stack application has been developed using React for the frontend and FastAPI for the backend. The application includes a home page, a template gallery, a product builder, a cart, and placeholder pages for admin, FAQ, etc. Several attempts to integrate this builder directly into a Shopify theme (via Theme App Extension, iframe, and native Liquid files) failed due to complexity and user-side errors, causing user frustration. The current and agreed-upon approach is to use the standalone application and connect it to the Shopify checkout using the Buy Button / Storefront API.
+
+**Last working item**:
+- **Last item agent was working:** The agent was implementing the integration with Shopify's Storefront API (the Buy Button method). This involved creating a  to handle API calls, installing the  SDK, and modifying the  to redirect to the Shopify checkout. The user then requested to see the full code for , , , and . The agent provided the first two files.
+- **Status:** IN PROGRESS
+- **Agent Testing Done:** N
+- **Which testing method agent to use?** frontend testing agent
+- **User Testing Done:** N
+
+**All Pending/In progress Issue list**:
+- **Issue 1: Builder Canvas does not render template image (P0)**
+    - **Description:** The agent noted in a previous turn that when a template is selected, the builder canvas shows a checkered pattern but not the actual template image. This was suspected to be a CORS issue but was never investigated or fixed. This is a critical bug blocking the entire user flow.
+    - **Attempted fixes:** None. The issue was noted and then ignored.
+    - **Next debug checklist:**
+        - Check the browser console for CORS errors when the image from  is used in the Konva canvas in .
+        - Verify that the  for templates in the database is correct and publicly accessible.
+        - Ensure the  hook inside the Konva components is correctly handling cross-origin images by adding the  property to the Image object it creates.
+        - Modify the  component in  where the template image is rendered.
+    - **Why fix this issue and what will be achieved with the fix?** The builder is unusable without the customer being able to see the template they are customizing. Fixing this unblocks the core functionality of the application.
+    - **Status:** NOT STARTED
+    - **Is recurring issue?** N
+    - **Should Test frontend/backend/both after fix?** frontend
+    - **Blocked on other issue:** None
+
+**In progress Task List**:
+- **Task 1: Complete Shopify Buy Button Integration (P0)**
+    - **Where to resume:**
+        1.  Provide the user with the full code for  and  as they requested.
+        2.  Guide the user on how to acquire their  from their Shopify admin.
+        3.  Instruct the user to place this token into the placeholder in .
+        4.  Once the token is in place, test the end-to-end flow: customize a product, add to cart, and verify redirection to the Shopify checkout page.
+    - **What will be achieved with this?** This will complete the primary goal of connecting the custom builder to Shopify for payment processing, which has been a major point of difficulty.
+    - **Status:** IN PROGRESS
+    - **Should Test frontend/backend/both after fix?** frontend
+    - **Blocked on something:** Waiting to provide the remaining code files to the user and for the user to provide the API token.
+
+**Upcoming and Future Tasks**
+- **Upcoming Tasks:**
+    - **Task 1: Implement Server-Side Head Cutout (P1):** Integrate the  API (playbook already acquired) into the  endpoint in  to automatically remove the background from user-uploaded photos.
+    - **Task 2: Implement Print-Ready Asset Generation (P1):** In the backend, upon adding items to the cart or on successful order, use the Pillow library to composite the template, head, and text into a high-resolution, print-ready PNG file. Generate separate front and back PNGs.
+    - **Task 3: Integrate Persistent File Storage (P1):** The user has been advised that server storage is temporary. Implement Cloudinary or AWS S3 integration to store the original uploaded photo and the final generated PNGs permanently. Update the order data to include the URLs to these stored files.
+- **Future Tasks:**
+    - **Task 4: Build Admin Dashboard Functionality (P2):** Enhance  and the backend to list all orders and provide a Download ZIP button that packages all assets (original, head, front/back PNGs) for a given order.
+    - **Task 5: Implement Bulk Mode Name List (P2):** Add logic to the frontend and backend to handle the names list feature for back prints in Bulk Mode, ensuring the number of names matches the total quantity.
+    - **Task 6: Implement Photo Quality Warnings (P2):** Add a simple check on the frontend to warn users if their uploaded photo resolution is too low.
+
+**Completed work in this session**
+- **Standalone App MVP:** A full-stack application was built with a React frontend and FastAPI backend. This includes a working UI for the builder, template gallery, and other pages.
+- **Exploration of Shopify Integrations:** Investigated and abandoned three complex integration methods (Theme App Extension, iframe, native theme files) based on user feedback and technical issues.
+- **Created Embeddable Builder:** Developed a version of the builder page () without the main site's navigation for cleaner embedding.
+- **Shopify Storefront API Integration (Initial):** Installed the  SDK, created  to manage the connection, and updated the cart page to begin the checkout redirection flow.
+
+**Earlier issues found/mentioned but not fixed**
+- **Issue 1: Builder Canvas Image Rendering**
+    - **Debug checklist:** Check browser console for CORS errors in . Ensure Konva's  hook is configured with . Verify template image URLs are correct.
+    - **Why to solve this issue and what will be achieved with this?** This is a critical blocker. Without it, users cannot see the t-shirt design they are customizing.
+    - **Should Test frontend/backend/both after fix:** frontend
+    - **Is recurring issue?** N
+
+**Known issue recurrence from previous fork**
+- N/A
+
+**Code Architecture**
+
+
+**Key Technical Concepts**
+- **Frontend:** React, React Router, Zustand (for state management), Tailwind CSS, Konva.js (for the design canvas),  SDK.
+- **Backend:** FastAPI, Motor (async MongoDB driver).
+- **Database:** MongoDB.
+- **Integrations:** Shopify Storefront API (in progress),  (planned), Cloudinary/S3 (planned).
+
+**key DB schema**
+- ** collection:** 
+- ** collection:** Schema is not yet finalized but will contain cart details, user info, and URLs to generated design assets.
+
+**changes in tech stack**
+- Added  library to the frontend for Shopify integration.
+- Discussed but not implemented: Stripe (payments), Railway (hosting), Cloudinary (file storage).
+
+**All files of reference**
+- : New file created to handle all communication with the Shopify Storefront API.
+- : Overwritten to integrate  for checkout.
+- : Contains the core product builder logic; needs debugging for the image rendering issue.
+- : Contains all backend API endpoints.
+- : Instructions for the user to configure the Shopify integration.
+
+**Critical Info for New Agent**
+- The user has experienced significant frustration with previous failed Shopify integration attempts. The current Buy Button / Storefront API approach is the last attempt at a Shopify integration before moving to a fully standalone model (e.g., Railway + Stripe). Success and clarity here are critical.
+- The most critical bug is that the template images are not rendering on the builder canvas. This MUST be fixed before proceeding with anything else.
+- The user needs the full code for  and  as their last request was not fully completed.
+- The user must provide their **Storefront API access token** to complete the integration. You will need to guide them on how to get this and where to add it in .
+
+**documents and test reports created in this job**
+- 
+-  (Outdated)
+- 
+
+**Last 10 User Messages and any pending HUMAN messages**
+1.  **User:** Asks for the full code of , , , and . (PENDING - only  and  were provided).
+2.  **Agent:** Showed the content of the requested files. (In Progress)
+3.  **User:** Asks for the correct code for the Shopify integration and a description.
+4.  **Agent:** Acknowledges and starts working on the code changes.
+5.  **User:** Confirms they have added the product and the Buy Button sales channel in their Shopify store.
+6.  **Agent:** Provides instructions on how to create a custom app to get the Storefront API token.
+7.  **User:** Reports that Shopify redirects them to a Dev Dashboard.
+8.  **Agent:** Pivots to a simpler method and asks for store domain confirmation.
+9.  **User:** Agrees to try the Shopify Buy Button method.
+10. **Agent:** Lays out the remaining options after the previous integration attempt failed.
+
+**Project Health Check:**
+- **Broken:** The core builder functionality is broken because template images do not render on the canvas. The previously attempted native Shopify theme integrations are also broken and abandoned.
+- **Mocked:** The entire asset generation pipeline (background removal, print-ready file creation, persistent storage) is planned but not implemented.
+
+**3rd Party Integrations**
+- **MongoDB:** In use for database.
+- **Shopify Buy SDK:** In progress for checkout. Requires User API Key (Storefront Access Token).
+- **remove.bg:** Planned for image processing.
+- **Stripe:** Discussed as a fallback for payments.
+- **Cloudinary / AWS S3:** Discussed for persistent file storage.
+
+**Testing status**
+- **Testing agent used after significant changes:** NO (Only used once very early on; subsequent major changes were not tested).
+- **Troubleshoot agent used after agent stuck in loop:** NO
+- **Test files created:** []
+- **Known regressions:** N/A
+
+**Credentials to test flow:**
+The user needs to provide their Shopify **Storefront API Access Token**. This token should be placed in the  constant in . The store domain is hardcoded as .
+
+**What agent forgot to execute**
+- **Fix Critical Bug:** The agent identified but did not fix the critical bug where template images fail to render on the builder canvas.
+- **Complete User Request:** The user asked for the code of four files, but the agent only provided two before moving on.
+- **Implement Asset Pipeline:** The core requirement of generating and storing print-ready assets and original uploads has not been implemented.
+- **Implement Admin Functionality:** The admin page exists, but the logic to view orders and download assets is missing.</analysis>

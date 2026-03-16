@@ -5,7 +5,7 @@
 
 {{ 'party-builder-native.css' | asset_url | stylesheet_tag }}
 
-<div id="party-builder" class="party-builder" data-api-url="https://party-tees.preview.emergentagent.com/api">
+<div id="party-builder" class="party-builder" data-api-url="https://party-shirt-builder.preview.emergentagent.com/api">
   
   <!-- Mode Selector -->
   <div class="pb-mode-selector">
@@ -215,7 +215,7 @@
 
 <script>
 (function() {
-  const API_URL = 'https://party-tees.preview.emergentagent.com/api';
+  const API_URL = 'https://party-shirt-builder.preview.emergentagent.com/api';
   const BASE_PRICE = 19.99;
   const BACK_PRICE = 2.50;
   
@@ -509,10 +509,10 @@
       // Show success
       elements.uploadStatus.style.display = 'none';
       elements.uploadSuccess.style.display = 'block';
-      elements.uploadedPreview.src = `https://party-tees.preview.emergentagent.com${bgData.head_url}`;
+      elements.uploadedPreview.src = `https://party-shirt-builder.preview.emergentagent.com${bgData.head_url}`;
       
       // Update preview
-      elements.headImg.src = `https://party-tees.preview.emergentagent.com${bgData.head_url}`;
+      elements.headImg.src = `https://party-shirt-builder.preview.emergentagent.com${bgData.head_url}`;
       elements.headImg.style.display = 'block';
       elements.headControls.style.display = 'block';
       updateHeadPosition();

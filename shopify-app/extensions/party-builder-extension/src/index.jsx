@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 const getConfig = () => {
   const container = document.getElementById('party-builder-app');
   return {
-    apiUrl: container?.dataset.apiUrl || 'https://party-tees.preview.emergentagent.com/api',
+    apiUrl: container?.dataset.apiUrl || 'https://party-shirt-builder.preview.emergentagent.com/api',
     productHandle: container?.dataset.productHandle || 'custom-party-tshirt',
     primaryColor: container?.dataset.primaryColor || '#FF2E63',
     secondaryColor: container?.dataset.secondaryColor || '#08D9D6',

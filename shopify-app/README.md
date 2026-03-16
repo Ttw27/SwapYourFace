@@ -19,7 +19,7 @@ This is the Shopify App version of PartyTees Party Builder, designed to be embed
 1. In Partner Dashboard, go to **Apps** → **Create app**
 2. Choose **Create app manually**
 3. App name: `PartyTees Builder`
-4. App URL: Your deployed backend URL (e.g., `https://party-tees.preview.emergentagent.com`)
+4. App URL: Your deployed backend URL (e.g., `https://party-shirt-builder.preview.emergentagent.com`)
 5. Allowed redirection URLs: Add your app URL + `/api/auth/callback`
 
 ### Step 3: Get API Credentials

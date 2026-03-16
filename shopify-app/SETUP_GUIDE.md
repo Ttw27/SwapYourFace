@@ -29,8 +29,8 @@ This guide will help you integrate the PartyTees Party Builder into your Shopify
 2. Choose **"Create app manually"**
 3. Fill in:
    - **App name**: `PartyTees Builder`
-   - **App URL**: `https://party-tees.preview.emergentagent.com`
-   - **Allowed redirection URL(s)**: `https://party-tees.preview.emergentagent.com/api/shopify/callback`
+   - **App URL**: `https://party-shirt-builder.preview.emergentagent.com`
+   - **Allowed redirection URL(s)**: `https://party-shirt-builder.preview.emergentagent.com/api/shopify/callback`
 4. Click **"Create app"**
 
 ---
@@ -122,7 +122,7 @@ shopify app deploy
 4. Click **"Add section"** or **"Add block"**
 5. Look for **"Party Builder"** under "Apps"
 6. Add it and configure settings:
-   - **Backend API URL**: `https://party-tees.preview.emergentagent.com/api`
+   - **Backend API URL**: `https://party-shirt-builder.preview.emergentagent.com/api`
    - **Product Handle**: `custom-party-tshirt`
    - **Base Price**: 1999 (£19.99 in pence)
    - **Back Print Price**: 250 (£2.50 in pence)
@@ -164,7 +164,7 @@ The Theme App Extension block has these settings:
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| Backend API URL | Your PartyTees API endpoint | `https://party-tees.preview.emergentagent.com/api` |
+| Backend API URL | Your PartyTees API endpoint | `https://party-shirt-builder.preview.emergentagent.com/api` |
 | Product Handle | Shopify product handle for custom shirts | `custom-party-tshirt` |
 | Primary Color | Main brand color | `#FF2E63` |
 | Secondary Color | Accent color | `#08D9D6` |

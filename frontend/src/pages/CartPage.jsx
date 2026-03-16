@@ -77,7 +77,7 @@ export default function CartPage() {
           { key: 'Back Print', value: item.hasBackPrint ? 'Yes (+£2.50)' : 'No' },
           { key: 'Back Name', value: item.backName || '' },
           { key: '_head_cutout_id', value: item.headCutoutId || '' },
-          { key: '_design_url', value: item.headUrl ? `https://party-tees.preview.emergentagent.com${item.headUrl}` : '' },
+          { key: '_design_url', value: item.headUrl ? `https://party-shirt-builder.preview.emergentagent.com${item.headUrl}` : '' },
         ].filter(attr => attr.value); // Remove empty values
 
         lineItems.push({
