@@ -1,18 +1,22 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
 import { useStore } from '@/store/useStore';
 import { toast } from 'sonner';
 import { 
   Trash2, ShoppingCart, ArrowRight, 
-  Shirt, Tag, CheckCircle, Loader2 
+  Shirt, CheckCircle, Loader2, ExternalLink
 } from 'lucide-react';
+import { 
+  addToCheckout, 
+  getProductByHandle, 
+  findVariantId, 
+  redirectToCheckout,
+  getCheckout 
+} from '@/services/shopifyClient';
 
-const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
+const PRODUCT_HANDLE = 'custom-party-t-shirt'; // Your Shopify product handle
 
 export default function CartPage() {
   const navigate = useNavigate();
@@ -21,93 +25,91 @@ export default function CartPage() {
     getCartTotal, getCartItemCount, pricing 
   } = useStore();
   
-  const [customerName, setCustomerName] = useState('');
-  const [customerEmail, setCustomerEmail] = useState('');
-  const [gdprConsent, setGdprConsent] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [orderComplete, setOrderComplete] = useState(false);
-  const [orderNumber, setOrderNumber] = useState('');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [shopifyProduct, setShopifyProduct] = useState(null);
+  const [checkoutUrl, setCheckoutUrl] = useState(null);
 
-  const handleCheckout = async () => {
-    if (!customerName.trim()) {
-      toast.error('Please enter your name');
-      return;
-    }
-    if (!customerEmail.trim() || !customerEmail.includes('@')) {
-      toast.error('Please enter a valid email');
-      return;
-    }
-    if (!gdprConsent) {
-      toast.error('Please accept the terms and conditions');
+  // Fetch Shopify product on mount
+  useEffect(() => {
+    const fetchProduct = async () => {
+      try {
+        const product = await getProductByHandle(PRODUCT_HANDLE);
+        setShopifyProduct(product);
+        
+        // Also get current checkout URL if exists
+        const checkout = await getCheckout();
+        if (checkout?.webUrl && checkout.lineItems?.length > 0) {
+          setCheckoutUrl(checkout.webUrl);
+        }
+      } catch (error) {
+        console.error('Error fetching Shopify product:', error);
+      }
+    };
+    fetchProduct();
+  }, []);
+
+  const handleShopifyCheckout = async () => {
+    if (!shopifyProduct) {
+      toast.error('Product not found. Please try again.');
       return;
     }
 
-    setIsSubmitting(true);
+    setIsProcessing(true);
 
     try {
-      const response = await fetch(`${API}/orders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          customer_name: customerName,
-          customer_email: customerEmail,
-          items: cartItems,
-          gdpr_consent: gdprConsent
-        })
-      });
+      // Build line items for Shopify
+      const lineItems = [];
+      
+      for (const item of cartItems) {
+        // Find the variant ID for this size
+        const variantId = findVariantId(shopifyProduct, item.size);
+        
+        if (!variantId) {
+          toast.error(`Size ${item.size} not available`);
+          continue;
+        }
 
-      if (!response.ok) throw new Error('Order failed');
+        // Custom attributes to pass design info to Shopify order
+        const customAttributes = [
+          { key: 'Template', value: item.templateName || 'Custom' },
+          { key: 'Title Text', value: item.titleText || '' },
+          { key: 'Subtitle Text', value: item.subtitleText || '' },
+          { key: 'Back Print', value: item.hasBackPrint ? 'Yes (+£2.50)' : 'No' },
+          { key: 'Back Name', value: item.backName || '' },
+          { key: '_head_cutout_id', value: item.headCutoutId || '' },
+          { key: '_design_url', value: item.headUrl ? `https://party-tees.preview.emergentagent.com${item.headUrl}` : '' },
+        ].filter(attr => attr.value); // Remove empty values
 
-      const order = await response.json();
-      setOrderNumber(order.order_number);
-      setOrderComplete(true);
+        lineItems.push({
+          variantId,
+          quantity: item.quantity || 1,
+          customAttributes,
+        });
+      }
+
+      if (lineItems.length === 0) {
+        toast.error('No valid items to checkout');
+        setIsProcessing(false);
+        return;
+      }
+
+      // Add to Shopify checkout
+      await addToCheckout(lineItems);
+      
+      // Clear local cart
       clearCart();
-      toast.success('Order placed successfully!');
+      
+      // Redirect to Shopify checkout
+      toast.success('Redirecting to checkout...');
+      await redirectToCheckout();
 
     } catch (error) {
-      console.error('Error:', error);
-      toast.error('Failed to place order. Please try again.');
+      console.error('Checkout error:', error);
+      toast.error('Failed to create checkout. Please try again.');
     } finally {
-      setIsSubmitting(false);
+      setIsProcessing(false);
     }
   };
-
-  if (orderComplete) {
-    return (
-      <div className="min-h-screen bg-[#F7F7F7] flex items-center justify-center px-6">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="card-party p-8 max-w-lg w-full text-center"
-        >
-          <div className="w-20 h-20 mx-auto mb-6 bg-green-100 rounded-full flex items-center justify-center">
-            <CheckCircle className="w-10 h-10 text-green-600" />
-          </div>
-          <h1 className="font-['Anton'] text-3xl text-[#252A34] mb-4 tracking-wide">
-            ORDER CONFIRMED!
-          </h1>
-          <p className="text-gray-600 mb-2">Thank you for your order</p>
-          <p className="text-lg font-bold text-[#FF2E63] mb-6">{orderNumber}</p>
-          <p className="text-gray-500 text-sm mb-8">
-            We've sent a confirmation email to {customerEmail}. 
-            You'll receive updates on your order status.
-          </p>
-          <div className="flex flex-col gap-3">
-            <Link to="/">
-              <Button className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full font-bold uppercase tracking-wider">
-                Continue Shopping
-              </Button>
-            </Link>
-            <Link to="/builder">
-              <Button variant="outline" className="w-full rounded-full">
-                Create Another Design
-              </Button>
-            </Link>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
 
   if (cartItems.length === 0) {
     return (
@@ -124,6 +126,20 @@ export default function CartPage() {
           <p className="text-gray-600 mb-8">
             Start creating your custom party t-shirts!
           </p>
+          
+          {checkoutUrl && (
+            <div className="mb-6">
+              <p className="text-sm text-gray-500 mb-2">Have items in Shopify checkout?</p>
+              <a 
+                href={checkoutUrl}
+                className="inline-flex items-center text-[#FF2E63] font-medium hover:underline"
+              >
+                Continue to Shopify Checkout
+                <ExternalLink className="w-4 h-4 ml-1" />
+              </a>
+            </div>
+          )}
+          
           <Link to="/builder">
             <Button 
               data-testid="empty-cart-create-btn"
@@ -230,80 +246,51 @@ export default function CartPage() {
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-600">Shipping</span>
-                  <span className="text-green-600 font-medium">FREE</span>
+                  <span className="text-green-600 font-medium">Calculated at checkout</span>
                 </div>
               </div>
               
               <div className="border-t my-4 pt-4">
                 <div className="flex justify-between items-center">
-                  <span className="text-lg font-bold text-[#252A34]">Total</span>
+                  <span className="text-lg font-bold text-[#252A34]">Subtotal</span>
                   <span className="text-2xl font-bold text-[#FF2E63]">
                     £{getCartTotal().toFixed(2)}
                   </span>
                 </div>
               </div>
 
-              {/* Customer Details */}
-              <div className="space-y-4 mt-6">
-                <div>
-                  <Label htmlFor="name" className="text-sm font-medium">Your Name</Label>
-                  <Input
-                    id="name"
-                    value={customerName}
-                    onChange={(e) => setCustomerName(e.target.value)}
-                    placeholder="John Smith"
-                    className="mt-1"
-                    data-testid="checkout-name"
-                  />
-                </div>
-                <div>
-                  <Label htmlFor="email" className="text-sm font-medium">Email Address</Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={customerEmail}
-                    onChange={(e) => setCustomerEmail(e.target.value)}
-                    placeholder="john@example.com"
-                    className="mt-1"
-                    data-testid="checkout-email"
-                  />
-                </div>
-                
-                <div className="flex items-start gap-3 pt-2">
-                  <Checkbox
-                    id="terms"
-                    checked={gdprConsent}
-                    onCheckedChange={setGdprConsent}
-                    data-testid="checkout-consent"
-                  />
-                  <label htmlFor="terms" className="text-xs text-gray-600 cursor-pointer">
-                    I agree to the terms and conditions and consent to my data being processed for order fulfilment.
-                  </label>
-                </div>
-              </div>
-
+              {/* Shopify Checkout Button */}
               <Button
-                onClick={handleCheckout}
-                disabled={isSubmitting}
-                className="w-full mt-6 bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 font-bold uppercase tracking-wider"
-                data-testid="checkout-btn"
+                onClick={handleShopifyCheckout}
+                disabled={isProcessing || !shopifyProduct}
+                className="w-full mt-4 bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 font-bold uppercase tracking-wider"
+                data-testid="shopify-checkout-btn"
               >
-                {isSubmitting ? (
+                {isProcessing ? (
                   <>
                     <Loader2 className="w-5 h-5 mr-2 animate-spin" />
                     Processing...
                   </>
                 ) : (
                   <>
-                    Complete Order
+                    Checkout with Shopify
                     <ArrowRight className="w-5 h-5 ml-2" />
                   </>
                 )}
               </Button>
 
-              <p className="text-xs text-gray-500 text-center mt-4">
-                Secure checkout • Free UK shipping
-              </p>
+              <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                <p className="text-xs text-gray-500 text-center">
+                  <CheckCircle className="w-4 h-4 inline mr-1 text-green-500" />
+                  Secure checkout powered by Shopify
+                </p>
+              </div>
+
+              {!shopifyProduct && (
+                <p className="text-xs text-yellow-600 text-center mt-2">
+                  Loading product info...
+                </p>
+              )}
             </div>
           </div>
         </div>
