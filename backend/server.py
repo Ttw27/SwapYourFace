@@ -18,6 +18,7 @@ import io
 import json
 import zipfile
 import shutil
+import stripe
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -26,6 +27,9 @@ load_dotenv(ROOT_DIR / '.env')
 mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
+
+# Stripe
+stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
 
 # Create directories for file storage
 UPLOAD_DIR = ROOT_DIR / "uploads"
@@ -56,8 +60,12 @@ class Template(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
-    category: str  # "stag" or "hen"
-    body_image_url: str
+    # categories is now a list to support crossover templates e.g. ["stag", "party"]
+    categories: List[str] = Field(default_factory=list)
+    # Keep category for backwards compatibility
+    category: str = "stag"
+    body_image_url: str       # Design PNG - blank body, no head, no text
+    product_image_url: str = "" # Product hero image - with sample head + text
     head_placement: Dict[str, Any] = Field(default_factory=lambda: {"x": 0.5, "y": 0.15, "scale": 1.0, "rotation": 0})
     text_fields: Dict[str, Any] = Field(default_factory=lambda: {
         "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
@@ -69,8 +77,10 @@ class Template(BaseModel):
 
 class TemplateCreate(BaseModel):
     name: str
-    category: str
+    categories: List[str] = ["stag"]
+    category: Optional[str] = None
     body_image_url: str
+    product_image_url: Optional[str] = ""
     head_placement: Optional[Dict[str, Any]] = None
     text_fields: Optional[Dict[str, Any]] = None
     is_popular: Optional[bool] = False
@@ -104,21 +114,6 @@ class CartItem(BaseModel):
     price: float = 19.99
     back_price: float = 2.50
 
-class BulkOrderItem(BaseModel):
-    template_id: str
-    template_name: str
-    head_cutout_id: Optional[str] = None
-    title_text: str = ""
-    subtitle_text: str = ""
-    has_back_print: bool = False
-    back_names: List[str] = []  # List of names for each shirt
-    single_back_name: Optional[str] = None  # Single name for all shirts
-    head_placement: Dict[str, Any] = Field(default_factory=lambda: {"x": 0.5, "y": 0.15, "scale": 1.0, "rotation": 0})
-    sizes: Dict[str, int] = Field(default_factory=lambda: {"S": 0, "M": 0, "L": 0, "XL": 0, "2XL": 0, "3XL": 0})
-    preview_url: Optional[str] = None
-    front_print_url: Optional[str] = None
-    original_photo_url: Optional[str] = None
-
 class Order(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -128,7 +123,8 @@ class Order(BaseModel):
     items: List[Dict[str, Any]]
     total_amount: float
     currency: str = "GBP"
-    status: str = "pending"  # pending, processing, completed, shipped
+    status: str = "pending"
+    stripe_payment_intent_id: Optional[str] = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     gdpr_consent: bool = False
 
@@ -138,36 +134,47 @@ class OrderCreate(BaseModel):
     items: List[Dict[str, Any]]
     gdpr_consent: bool
 
+class PaymentIntentCreate(BaseModel):
+    items: List[Dict[str, Any]]
+    customer_email: Optional[str] = None
+
 # ============ TEMPLATES ENDPOINTS ============
 
 @api_router.get("/")
 async def root():
-    return {"message": "PartyTees API is running", "version": "1.0.0"}
+    return {"message": "PartyTees API is running", "version": "2.0.0"}
 
-@api_router.get("/templates", response_model=List[Template])
+@api_router.get("/templates")
 async def get_templates(category: Optional[str] = None, popular: Optional[bool] = None):
     query = {}
     if category:
-        query["category"] = category.lower()
+        # Match against the new categories list
+        query["categories"] = {"$in": [category.lower()]}
     if popular is not None:
         query["is_popular"] = popular
     
     templates = await db.templates.find(query, {"_id": 0}).to_list(100)
     return templates
 
-@api_router.get("/templates/{template_id}", response_model=Template)
+@api_router.get("/templates/{template_id}")
 async def get_template(template_id: str):
     template = await db.templates.find_one({"id": template_id}, {"_id": 0})
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     return template
 
-@api_router.post("/templates", response_model=Template)
+@api_router.post("/templates")
 async def create_template(template: TemplateCreate):
+    categories = template.categories
+    if not categories and template.category:
+        categories = [template.category.lower()]
+
     template_obj = Template(
         name=template.name,
-        category=template.category.lower(),
+        categories=categories,
+        category=categories[0] if categories else "stag",
         body_image_url=template.body_image_url,
+        product_image_url=template.product_image_url or "",
         head_placement=template.head_placement or {"x": 0.5, "y": 0.15, "scale": 1.0, "rotation": 0},
         text_fields=template.text_fields or {
             "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
@@ -184,44 +191,50 @@ async def create_template(template: TemplateCreate):
 
 @api_router.post("/templates/seed")
 async def seed_templates():
-    """Seed default templates"""
+    """Seed default templates from Cloudinary"""
     default_templates = [
         {
-            "id": "disco",
-            "name": "Disco King",
+            "id": "hip-hop-king",
+            "name": "Hip Hop King",
+            "categories": ["stag", "party"],
             "category": "stag",
-            "body_image_url": "https://customer-assets.emergentagent.com/job_party-tees/artifacts/upc1s63s_Stag-9.png",
-            "head_placement": {"x": 0.5, "y": 0.08, "scale": 0.4, "rotation": 0},
+            "body_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773762298/HipHopKingDESIGN-Stag-6_zs17oa.png",
+            "product_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773762289/HipHipKing-Stag-6_qsbgsw.jpg",
+            "head_placement": {"x": 0.5, "y": 0.12, "scale": 0.4, "rotation": 0},
+            "text_fields": {
+                "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
+                "subtitle": {"font": "Anton", "size": 32, "color": "#FFD700", "outline": "#000000"}
+            },
+            "is_popular": True,
+            "is_new": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        },
+        {
+            "id": "bodybuilder",
+            "name": "Bodybuilder",
+            "categories": ["stag", "party"],
+            "category": "stag",
+            "body_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763080/BodybuilderDESIGN-Stag-16_xr0gyt.png",
+            "product_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763096/BodyBuilder-Stag-16_swgojr.jpg",
+            "head_placement": {"x": 0.5, "y": 0.1, "scale": 0.4, "rotation": 0},
+            "text_fields": {
+                "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
+                "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
+            },
+            "is_popular": True,
+            "is_new": False,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        },
+        {
+            "id": "superhero-stag",
+            "name": "Superhero Stag",
+            "categories": ["stag"],
+            "category": "stag",
+            "body_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763083/SuperheroDESIGN-Stag-2_ejhssm.png",
+            "product_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763095/Superhero-Stag-2_k24w6h.jpg",
+            "head_placement": {"x": 0.5, "y": 0.1, "scale": 0.4, "rotation": 0},
             "text_fields": {
                 "title": {"font": "Anton", "size": 48, "color": "#FFD700", "outline": "#000000"},
-                "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
-            },
-            "is_popular": True,
-            "is_new": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": "caveman",
-            "name": "Caveman",
-            "category": "stag",
-            "body_image_url": "https://customer-assets.emergentagent.com/job_party-tees/artifacts/kud67bmp_Stag-12.png",
-            "head_placement": {"x": 0.5, "y": 0.05, "scale": 0.35, "rotation": 0},
-            "text_fields": {
-                "title": {"font": "Anton", "size": 48, "color": "#8B4513", "outline": "#000000"},
-                "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
-            },
-            "is_popular": True,
-            "is_new": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": "lifeguard",
-            "name": "Lifeguard",
-            "category": "stag",
-            "body_image_url": "https://customer-assets.emergentagent.com/job_party-tees/artifacts/weetxjo5_Stag-14.png",
-            "head_placement": {"x": 0.5, "y": 0.05, "scale": 0.35, "rotation": 0},
-            "text_fields": {
-                "title": {"font": "Anton", "size": 48, "color": "#FF0000", "outline": "#FFFFFF"},
                 "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
             },
             "is_popular": False,
@@ -230,10 +243,7 @@ async def seed_templates():
         }
     ]
     
-    # Clear existing templates
     await db.templates.delete_many({})
-    
-    # Insert new templates
     await db.templates.insert_many(default_templates)
     
     return {"message": "Templates seeded successfully", "count": len(default_templates)}
@@ -242,34 +252,24 @@ async def seed_templates():
 
 @api_router.post("/upload/photo")
 async def upload_photo(file: UploadFile = File(...)):
-    """Upload a photo and save original"""
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="File must be an image")
     
-    # Generate unique ID
     file_id = str(uuid.uuid4())
-    
-    # Read file content
     content = await file.read()
     
-    # Check file size (max 10MB)
     if len(content) > 10 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB")
     
-    # Get file extension
     ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
-    
-    # Save original
     original_path = ORIGINALS_DIR / f"{file_id}.{ext}"
+    
     async with aiofiles.open(original_path, "wb") as f:
         await f.write(content)
     
-    # Check image dimensions
     try:
         img = Image.open(io.BytesIO(content))
         width, height = img.size
-        
-        # Warn if image is too small
         quality_warning = None
         if width < 500 or height < 500:
             quality_warning = "Image resolution is low. For best print quality, use images at least 500x500 pixels."
@@ -277,7 +277,6 @@ async def upload_photo(file: UploadFile = File(...)):
         logger.error(f"Error reading image: {e}")
         raise HTTPException(status_code=400, detail="Invalid image file")
     
-    # Store metadata in database
     photo_doc = {
         "id": file_id,
         "original_filename": file.filename,
@@ -306,14 +305,10 @@ async def remove_background(
     crop_width: float = Form(1),
     crop_height: float = Form(1)
 ):
-    """Remove background from uploaded photo using remove.bg API or manual crop"""
-    
-    # Get the photo from database
     photo = await db.photos.find_one({"id": file_id}, {"_id": 0})
     if not photo:
         raise HTTPException(status_code=404, detail="Photo not found")
     
-    # Read original file
     original_path = Path(photo["original_path"])
     if not original_path.exists():
         raise HTTPException(status_code=404, detail="Original file not found")
@@ -325,34 +320,22 @@ async def remove_background(
     head_path = HEADS_DIR / f"{head_id}.png"
     
     if use_manual_crop:
-        # Manual crop - user will adjust on frontend
         try:
             img = Image.open(io.BytesIO(image_data))
             width, height = img.size
-            
-            # Calculate crop coordinates
             left = int(crop_x * width)
             top = int(crop_y * height)
             right = int((crop_x + crop_width) * width)
             bottom = int((crop_y + crop_height) * height)
-            
-            # Crop image
             cropped = img.crop((left, top, right, bottom))
-            
-            # Convert to RGBA if not already
             if cropped.mode != "RGBA":
                 cropped = cropped.convert("RGBA")
-            
-            # Save cropped image
             cropped.save(head_path, "PNG")
-            
         except Exception as e:
             logger.error(f"Error cropping image: {e}")
             raise HTTPException(status_code=500, detail="Error processing image")
     else:
-        # Try remove.bg API
         remove_bg_key = os.environ.get("REMOVE_BG_API_KEY")
-        
         if remove_bg_key:
             try:
                 response = requests.post(
@@ -361,33 +344,28 @@ async def remove_background(
                     data={"size": "auto"},
                     headers={"X-Api-Key": remove_bg_key}
                 )
-                
                 if response.status_code == 200:
                     async with aiofiles.open(head_path, "wb") as f:
                         await f.write(response.content)
                 else:
                     logger.warning(f"remove.bg API failed: {response.status_code}")
-                    # Fallback to just copying the original
                     img = Image.open(io.BytesIO(image_data))
                     if img.mode != "RGBA":
                         img = img.convert("RGBA")
                     img.save(head_path, "PNG")
             except Exception as e:
                 logger.error(f"remove.bg API error: {e}")
-                # Fallback
                 img = Image.open(io.BytesIO(image_data))
                 if img.mode != "RGBA":
                     img = img.convert("RGBA")
                 img.save(head_path, "PNG")
         else:
-            # No API key - just convert to PNG with transparency support
             logger.info("No remove.bg API key found, using original image")
             img = Image.open(io.BytesIO(image_data))
             if img.mode != "RGBA":
                 img = img.convert("RGBA")
             img.save(head_path, "PNG")
     
-    # Store head cutout metadata
     head_doc = {
         "id": head_id,
         "original_file_id": file_id,
@@ -411,88 +389,75 @@ async def get_original_file(filename: str):
     file_path = ORIGINALS_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
+    return FileResponse(file_path, headers={"Access-Control-Allow-Origin": "*"})
 
 @api_router.get("/files/heads/{filename}")
 async def get_head_file(filename: str):
     file_path = HEADS_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
+    return FileResponse(file_path, headers={"Access-Control-Allow-Origin": "*"})
 
 @api_router.get("/files/prints/{filename}")
 async def get_print_file(filename: str):
     file_path = PRINTS_DIR / filename
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path)
+    return FileResponse(file_path, headers={"Access-Control-Allow-Origin": "*"})
 
-# ============ PRINT GENERATION ============
+# ============ STRIPE PAYMENTS ============
 
-@api_router.post("/generate-print")
-async def generate_print(
-    template_id: str = Form(...),
-    head_cutout_id: str = Form(None),
-    title_text: str = Form(""),
-    subtitle_text: str = Form(""),
-    head_x: float = Form(0.5),
-    head_y: float = Form(0.15),
-    head_scale: float = Form(1.0),
-    head_rotation: float = Form(0),
-    generate_back: bool = Form(False),
-    back_name: str = Form(""),
-    back_number: str = Form("")
-):
-    """Generate print-ready PNG files"""
+@api_router.post("/payments/create-intent")
+async def create_payment_intent(data: PaymentIntentCreate):
+    """Create a Stripe PaymentIntent for the cart items"""
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
     
-    # Get template
-    template = await db.templates.find_one({"id": template_id}, {"_id": 0})
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
+    # Calculate total in pence (Stripe uses smallest currency unit)
+    total_pence = 0
+    for item in data.items:
+        base_price = item.get("price", 19.99)
+        quantity = item.get("quantity", 1)
+        has_back = item.get("hasBackPrint", False)
+        back_price = item.get("backPrice", 2.50) if has_back else 0
+        total_pence += int((base_price + back_price) * quantity * 100)
     
-    print_id = str(uuid.uuid4())
+    if total_pence < 30:  # Stripe minimum
+        raise HTTPException(status_code=400, detail="Order total too low")
     
-    # For MVP, we'll store the configuration and return URLs
-    # In production, you'd composite the images here using Pillow
-    
-    print_doc = {
-        "id": print_id,
-        "template_id": template_id,
-        "head_cutout_id": head_cutout_id,
-        "title_text": title_text,
-        "subtitle_text": subtitle_text,
-        "head_placement": {
-            "x": head_x,
-            "y": head_y,
-            "scale": head_scale,
-            "rotation": head_rotation
-        },
-        "has_back": generate_back,
-        "back_name": back_name,
-        "back_number": back_number,
-        "front_url": f"/api/files/prints/{print_id}_front.png",
-        "back_url": f"/api/files/prints/{print_id}_back.png" if generate_back else None,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    
-    await db.prints.insert_one(print_doc)
-    
-    return {
-        "id": print_id,
-        "front_url": print_doc["front_url"],
-        "back_url": print_doc["back_url"],
-        "config": print_doc
-    }
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=total_pence,
+            currency="gbp",
+            payment_method_types=["card", "paypal"],
+            metadata={
+                "customer_email": data.customer_email or "",
+                "item_count": str(len(data.items))
+            }
+        )
+        return {
+            "client_secret": intent.client_secret,
+            "amount": total_pence,
+            "currency": "gbp"
+        }
+    except stripe.error.StripeError as e:
+        logger.error(f"Stripe error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+
+@api_router.post("/payments/webhook")
+async def stripe_webhook(request_body: bytes = None):
+    """Handle Stripe webhook events"""
+    # In production, verify webhook signature
+    # For now just return 200
+    return {"status": "ok"}
 
 # ============ CART & ORDERS ============
 
-@api_router.post("/orders", response_model=Order)
+@api_router.post("/orders")
 async def create_order(order_data: OrderCreate):
-    """Create a new order"""
     if not order_data.gdpr_consent:
         raise HTTPException(status_code=400, detail="GDPR consent is required")
     
-    # Calculate total
     total = 0.0
     for item in order_data.items:
         base_price = item.get("price", 19.99)
@@ -512,27 +477,21 @@ async def create_order(order_data: OrderCreate):
     doc = order.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     await db.orders.insert_one(doc)
-    
     return order
 
-@api_router.get("/orders", response_model=List[Order])
+@api_router.get("/orders")
 async def get_orders(status: Optional[str] = None):
-    """Get all orders (admin)"""
     query = {}
     if status:
         query["status"] = status
-    
     orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    
     for order in orders:
         if isinstance(order['created_at'], str):
             order['created_at'] = datetime.fromisoformat(order['created_at'])
-    
     return orders
 
 @api_router.get("/orders/{order_id}")
 async def get_order(order_id: str):
-    """Get single order"""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -540,60 +499,39 @@ async def get_order(order_id: str):
 
 @api_router.patch("/orders/{order_id}/status")
 async def update_order_status(order_id: str, status: str):
-    """Update order status"""
     valid_statuses = ["pending", "processing", "completed", "shipped"]
     if status not in valid_statuses:
         raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
-    
-    result = await db.orders.update_one(
-        {"id": order_id},
-        {"$set": {"status": status}}
-    )
-    
+    result = await db.orders.update_one({"id": order_id}, {"$set": {"status": status}})
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Order not found")
-    
     return {"message": "Status updated", "status": status}
 
 @api_router.get("/orders/{order_id}/download")
 async def download_order_files(order_id: str):
-    """Download all files for an order as ZIP"""
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     
-    # Create temporary zip file
     zip_filename = f"order_{order['order_number']}.zip"
     zip_path = UPLOAD_DIR / zip_filename
     
     try:
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Add order details as JSON
             order_json = json.dumps(order, indent=2, default=str)
             zipf.writestr("order_details.json", order_json)
-            
-            # Add item files
             for idx, item in enumerate(order.get("items", [])):
                 person_prefix = f"Person{idx+1:02d}"
-                
-                # Try to add original photo
                 if item.get("original_photo_url"):
                     original_filename = item["original_photo_url"].split("/")[-1]
                     original_path = ORIGINALS_DIR / original_filename
                     if original_path.exists():
-                        zipf.write(original_path, f"{person_prefix}_Original.{original_path.suffix}")
-                
-                # Try to add head cutout
+                        zipf.write(original_path, f"{person_prefix}_Original{original_path.suffix}")
                 if item.get("head_cutout_id"):
                     head_path = HEADS_DIR / f"{item['head_cutout_id']}.png"
                     if head_path.exists():
                         zipf.write(head_path, f"{person_prefix}_Head.png")
-        
-        return FileResponse(
-            zip_path,
-            filename=zip_filename,
-            media_type="application/zip"
-        )
+        return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
     except Exception as e:
         logger.error(f"Error creating zip: {e}")
         raise HTTPException(status_code=500, detail="Error creating download file")
@@ -602,7 +540,6 @@ async def download_order_files(order_id: str):
 
 @api_router.get("/pricing")
 async def get_pricing():
-    """Get current pricing"""
     return {
         "base_price": 19.99,
         "back_print_price": 2.50,
@@ -615,20 +552,16 @@ async def get_pricing():
         ]
     }
 
-# ============ STATS (Admin) ============
+# ============ ADMIN STATS ============
 
 @api_router.get("/admin/stats")
 async def get_admin_stats():
-    """Get admin dashboard stats"""
     total_orders = await db.orders.count_documents({})
     pending_orders = await db.orders.count_documents({"status": "pending"})
     total_templates = await db.templates.count_documents({})
     total_photos = await db.photos.count_documents({})
-    
-    # Calculate total revenue
     orders = await db.orders.find({}, {"total_amount": 1, "_id": 0}).to_list(1000)
     total_revenue = sum(o.get("total_amount", 0) for o in orders)
-    
     return {
         "total_orders": total_orders,
         "pending_orders": pending_orders,
@@ -651,10 +584,9 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    logger.info("PartyTees API starting up...")
-    # Create indexes
+    logger.info("PartyTees API v2 starting up...")
     await db.templates.create_index("id", unique=True)
-    await db.templates.create_index("category")
+    await db.templates.create_index("categories")
     await db.photos.create_index("id", unique=True)
     await db.head_cutouts.create_index("id", unique=True)
     await db.orders.create_index("id", unique=True)
