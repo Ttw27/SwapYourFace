@@ -5,6 +5,8 @@
   
   "dependencies": {
     "ajv": "^8.17.1",
+    "react-app-rewired": "^2.2.1",
+"customize-cra": "^1.0.0",
     "@hookform/resolvers": "^5.0.1",
     "@radix-ui/react-accordion": "^1.2.8",
     "@radix-ui/react-alert-dialog": "^1.1.11",
@@ -64,9 +66,9 @@
     "zustand": "^5.0.11"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "build": "react-scripts build",
-    "test": "react-scripts test"
+"start": "react-app-rewired start",
+"build": "react-app-rewired build",
+"test": "react-app-rewired test"
   },
   "browserslist": {
     "production": [
