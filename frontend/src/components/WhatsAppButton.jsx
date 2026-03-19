@@ -3,7 +3,7 @@
 // Replace WHATSAPP_NUMBER with your business WhatsApp number in international format
 // e.g. 447911123456 for UK number 07911 123456 (no + or spaces)
 
-const WHATSAPP_NUMBER = '447911123456'; // ← REPLACE WITH YOUR NUMBER
+const WHATSAPP_NUMBER = '447822032847';
 const WHATSAPP_MESSAGE = 'Hi! I have a question about Swap My Face Tees 👋';
 
 export default function WhatsAppButton() {
