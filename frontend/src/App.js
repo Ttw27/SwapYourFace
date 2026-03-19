@@ -3,7 +3,7 @@ import "@/App.css";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { useStore } from "@/store/useStore";
-
+import WhatsAppButton from '@/components/WhatsAppButton';
 // Pages
 import HomePage from "@/pages/HomePage";
 import GalleryPage from "@/pages/GalleryPage";
@@ -76,6 +76,7 @@ function App() {
         <Footer />
       </BrowserRouter>
       <Toaster position="top-right" />
+    <WhatsAppButton />
     </div>
   );
 }
