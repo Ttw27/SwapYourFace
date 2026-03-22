@@ -324,7 +324,7 @@ export default function BuilderPage() {
   const fileInputRef = useRef(null);
   const stageRef = useRef(null);
   const canvasContainerRef = useRef(null);
-  const [canvasDisplayWidth, setCanvasDisplayWidth] = useState(0);
+  const [canvasDisplayWidth, setCanvasDisplayWidth] = useState(0); // v2
 
   useEffect(() => {
     let ro;
