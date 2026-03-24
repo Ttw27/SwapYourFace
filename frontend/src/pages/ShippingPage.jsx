@@ -1,165 +1,118 @@
 import { motion } from 'framer-motion';
-import { Truck, Clock, RefreshCw, MapPin, Package, CheckCircle } from 'lucide-react';
+import { Truck, RotateCcw, Clock, CheckCircle, AlertCircle, Package } from 'lucide-react';
+import { Link } from 'react-router-dom';
+
+const Section = ({ icon: Icon, title, children }) => (
+  <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+    <div className="flex items-center gap-3 mb-4">
+      <div className="w-10 h-10 bg-[#FF2E63]/10 rounded-full flex items-center justify-center flex-shrink-0">
+        <Icon className="w-5 h-5 text-[#FF2E63]" />
+      </div>
+      <h2 className="font-['Anton'] text-xl text-[#252A34] tracking-wide">{title}</h2>
+    </div>
+    {children}
+  </div>
+);
 
 export default function ShippingPage() {
-  const shippingOptions = [
-    {
-      name: "Standard Delivery",
-      time: "5-7 working days",
-      price: "FREE",
-      description: "Free shipping on all UK orders"
-    },
-    {
-      name: "Express Delivery",
-      time: "2-3 working days",
-      price: "£7.99",
-      description: "Get your order faster"
-    },
-    {
-      name: "Next Day Delivery",
-      time: "Next working day",
-      price: "£12.99",
-      description: "Order before 12pm for next day delivery"
-    }
-  ];
-
   return (
-    <div className="min-h-screen bg-[#F7F7F7] py-12">
-      <div className="max-w-4xl mx-auto px-6">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-center mb-12"
-        >
-          <div className="w-16 h-16 mx-auto mb-6 bg-[#08D9D6]/10 rounded-2xl flex items-center justify-center">
-            <Truck className="w-8 h-8 text-[#08D9D6]" />
-          </div>
-          <h1 className="font-['Anton'] text-4xl sm:text-5xl text-[#252A34] mb-4 tracking-wide">
-            SHIPPING & RETURNS
-          </h1>
-          <p className="text-gray-600">
-            Free UK shipping on all orders
-          </p>
-        </motion.div>
+    <div className="min-h-screen bg-[#F7F7F7]">
+      <section className="bg-white py-12 border-b border-gray-100">
+        <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
+          <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }}>
+            <h1 className="font-['Anton'] text-4xl sm:text-5xl text-[#252A34] mb-4 tracking-wide">SHIPPING & RETURNS</h1>
+            <p className="text-gray-500">Everything you need to know about delivery and returns</p>
+          </motion.div>
+        </div>
+      </section>
 
-        {/* Shipping Options */}
-        <section className="mb-12">
-          <h2 className="font-['Anton'] text-2xl text-[#252A34] mb-6 tracking-wide">
-            DELIVERY OPTIONS
-          </h2>
-          <div className="grid sm:grid-cols-3 gap-4">
-            {shippingOptions.map((option, idx) => (
-              <motion.div
-                key={idx}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: idx * 0.1 }}
-                className="card-party p-6"
-              >
-                <div className="flex items-center gap-3 mb-4">
-                  {idx === 0 && <Package className="w-6 h-6 text-[#FF2E63]" />}
-                  {idx === 1 && <Truck className="w-6 h-6 text-[#08D9D6]" />}
-                  {idx === 2 && <Clock className="w-6 h-6 text-[#F9ED69]" />}
-                  <h3 className="font-bold text-[#252A34]">{option.name}</h3>
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12 space-y-6">
+
+        <Section icon={Truck} title="DELIVERY OPTIONS">
+          <div className="space-y-4">
+            <div className="flex items-start justify-between p-4 bg-green-50 border border-green-200 rounded-xl">
+              <div className="flex items-start gap-3">
+                <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold text-gray-800">Standard Delivery</p>
+                  <p className="text-sm text-gray-600 mt-0.5">5–8 working days from proof approval</p>
+                  <p className="text-xs text-gray-400 mt-1">Tracked delivery to any UK address</p>
                 </div>
-                <div className="space-y-2">
-                  <p className="text-sm text-gray-600">{option.time}</p>
-                  <p className="text-xl font-bold text-[#FF2E63]">{option.price}</p>
-                  <p className="text-xs text-gray-500">{option.description}</p>
+              </div>
+              <span className="font-['Anton'] text-xl text-green-700">FREE</span>
+            </div>
+            <div className="flex items-start justify-between p-4 bg-[#FF2E63]/5 border border-[#FF2E63]/20 rounded-xl">
+              <div className="flex items-start gap-3">
+                <Truck className="w-5 h-5 text-[#FF2E63] flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-bold text-gray-800">Express Delivery</p>
+                  <p className="text-sm text-gray-600 mt-0.5">3–5 working days from proof approval</p>
+                  <p className="text-xs text-gray-400 mt-1">Priority production + tracked delivery</p>
                 </div>
-              </motion.div>
+              </div>
+              <span className="font-['Anton'] text-xl text-[#FF2E63]">£8.99</span>
+            </div>
+          </div>
+          <p className="text-xs text-gray-400 mt-4">* Delivery times are from the point you approve your digital proof, not from the order date.</p>
+        </Section>
+
+        <Section icon={Clock} title="HOW IT WORKS">
+          <div className="space-y-3">
+            {[
+              { step: '1', title: 'Place your order', desc: 'Complete your design and pay securely via Stripe' },
+              { step: '2', title: 'We create your proof', desc: 'Our team reviews your design and creates a digital proof (usually within 24 hours)' },
+              { step: '3', title: 'You approve', desc: 'We email you the proof — nothing is printed until you say yes' },
+              { step: '4', title: 'We print & dispatch', desc: 'Once approved we print your order and dispatch via tracked delivery' },
+            ].map(s => (
+              <div key={s.step} className="flex items-start gap-3">
+                <div className="w-7 h-7 rounded-full bg-[#FF2E63] text-white flex items-center justify-center text-sm font-bold flex-shrink-0">{s.step}</div>
+                <div>
+                  <p className="font-medium text-gray-800">{s.title}</p>
+                  <p className="text-sm text-gray-500">{s.desc}</p>
+                </div>
+              </div>
             ))}
           </div>
-        </section>
+        </Section>
 
-        {/* Delivery Info */}
-        <section className="mb-12">
-          <h2 className="font-['Anton'] text-2xl text-[#252A34] mb-6 tracking-wide">
-            DELIVERY INFORMATION
-          </h2>
-          <div className="card-party p-6 space-y-4">
-            <div className="flex items-start gap-3">
-              <CheckCircle className="w-5 h-5 text-green-500 mt-0.5 flex-shrink-0" />
-              <p className="text-gray-600">All orders are printed and dispatched within 2-3 working days of order confirmation.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <CheckCircle className="w-5 h-5 text-green-500 mt-0.5 flex-shrink-0" />
-              <p className="text-gray-600">You'll receive a dispatch confirmation email with tracking information once your order ships.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <CheckCircle className="w-5 h-5 text-green-500 mt-0.5 flex-shrink-0" />
-              <p className="text-gray-600">We ship Monday to Friday, excluding bank holidays.</p>
-            </div>
-            <div className="flex items-start gap-3">
-              <CheckCircle className="w-5 h-5 text-green-500 mt-0.5 flex-shrink-0" />
-              <p className="text-gray-600">For express and next day delivery, orders must be placed before 12pm.</p>
-            </div>
-          </div>
-        </section>
+        <Section icon={Package} title="ORDER TRACKING">
+          <p className="text-gray-600 text-sm leading-relaxed">Once your order is dispatched you will receive a tracking number via email. You can use this to track your delivery on the courier's website. If you have any issues with your delivery please contact us via WhatsApp or email.</p>
+        </Section>
 
-        {/* Returns Policy */}
-        <section className="mb-12">
-          <h2 className="font-['Anton'] text-2xl text-[#252A34] mb-6 tracking-wide">
-            RETURNS & EXCHANGES
-          </h2>
-          <div className="card-party p-6">
-            <div className="flex items-start gap-3 mb-6">
-              <RefreshCw className="w-6 h-6 text-[#FF2E63] mt-0.5 flex-shrink-0" />
-              <div>
-                <h3 className="font-bold text-[#252A34] mb-2">Our Policy</h3>
-                <p className="text-gray-600">
-                  Due to the custom nature of our products, we cannot offer refunds or exchanges for change of mind. 
-                  However, if you receive a faulty or incorrect item, we will replace it free of charge.
-                </p>
-              </div>
+        <Section icon={RotateCcw} title="RETURNS & REFUNDS">
+          <div className="space-y-4 text-sm text-gray-600 leading-relaxed">
+            <div className="p-4 bg-yellow-50 border border-yellow-200 rounded-xl flex items-start gap-3">
+              <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0 mt-0.5" />
+              <p><strong className="text-gray-800">Please note:</strong> As all our products are custom-made to order, we are unable to accept returns for change of mind or sizing issues. We strongly recommend checking our size guide before ordering.</p>
             </div>
-            
-            <div className="border-t pt-6">
-              <h4 className="font-bold text-[#252A34] mb-3">We'll replace your order if:</h4>
-              <ul className="space-y-2 text-gray-600">
-                <li className="flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                  The print quality is not up to standard
-                </li>
-                <li className="flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                  You receive the wrong size or design
-                </li>
-                <li className="flex items-center gap-2">
-                  <CheckCircle className="w-4 h-4 text-green-500" />
-                  The item is damaged during shipping
-                </li>
+            <div>
+              <p className="font-bold text-gray-800 mb-2">We will offer a full refund or free reprint if:</p>
+              <ul className="space-y-1 list-disc pl-4">
+                <li>The product arrives damaged or faulty</li>
+                <li>The print quality is significantly different from the approved proof</li>
+                <li>We made an error with your order</li>
               </ul>
             </div>
-
-            <div className="border-t mt-6 pt-6">
-              <h4 className="font-bold text-[#252A34] mb-3">How to report an issue:</h4>
-              <ol className="space-y-2 text-gray-600 list-decimal list-inside">
-                <li>Email us at hello@partytees.co.uk within 14 days of receiving your order</li>
-                <li>Include your order number and photos of the issue</li>
-                <li>We'll review your case and respond within 24 hours</li>
-                <li>If approved, we'll send a replacement at no extra cost</li>
-              </ol>
+            <div>
+              <p className="font-bold text-gray-800 mb-2">To raise a claim please:</p>
+              <ul className="space-y-1 list-disc pl-4">
+                <li>Contact us within 14 days of receiving your order</li>
+                <li>Send photos of the issue via WhatsApp or email</li>
+                <li>Include your order number</li>
+              </ul>
             </div>
+            <p>We aim to resolve all issues within 3 working days. Your statutory rights are not affected.</p>
           </div>
-        </section>
+        </Section>
 
-        {/* Contact */}
-        <section>
-          <div className="card-party p-6 bg-[#252A34] text-white">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center">
-                <MapPin className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="font-bold mb-1">Need help with your order?</h3>
-                <p className="text-gray-300 text-sm">
-                  Contact us at hello@partytees.co.uk and we'll be happy to assist
-                </p>
-              </div>
-            </div>
-          </div>
-        </section>
+        <div className="bg-[#252A34] rounded-2xl p-6 text-center">
+          <h2 className="font-['Anton'] text-xl text-white tracking-wide mb-2">QUESTIONS?</h2>
+          <p className="text-gray-400 text-sm mb-4">We're happy to help — message us on WhatsApp for the fastest response</p>
+          <a href="https://wa.me/447822032847" target="_blank" rel="noreferrer"
+            className="inline-block bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-8 py-3 font-bold uppercase tracking-wider transition-colors text-sm">
+            WhatsApp Us
+          </a>
+        </div>
       </div>
     </div>
   );
