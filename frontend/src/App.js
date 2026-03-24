@@ -21,6 +21,7 @@ import CustomOrderPage from "@/pages/CustomOrderPage";
 // Components
 import Navbar from "@/components/Navbar";
 import Footer from "@/components/Footer";
+import WhatsAppButton from "@/components/WhatsAppButton";
 
 export default function App() {
   const { fetchPricing } = useStore();
@@ -52,6 +53,7 @@ export default function App() {
         <Footer />
       </div>
       <Toaster />
+      <WhatsAppButton />
     </BrowserRouter>
   );
 }
