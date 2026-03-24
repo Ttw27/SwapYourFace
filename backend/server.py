@@ -565,6 +565,44 @@ async def create_checkout_session(data: dict):
             "quantity": item.get("quantity", 1),
         })
 
+    # Add shipping as a line item if express
+    shipping_cost = data.get("shipping_cost", 0)
+    shipping_method = data.get("shipping_method", "standard")
+    if shipping_cost and shipping_cost > 0:
+        line_items.append({
+            "price_data": {
+                "currency": "gbp",
+                "product_data": {"name": f"{'Express' if shipping_method == 'express' else 'Standard'} Delivery", "description": "3–5 working days" if shipping_method == "express" else "5–8 working days"},
+                "unit_amount": int(shipping_cost * 100),
+            },
+            "quantity": 1,
+        })
+
+    # Apply discount code as negative line item
+    discount_code = data.get("discount_code", "").upper().strip()
+    discount_percent = 0
+    if discount_code:
+        doc = await db.discount_codes.find_one({"code": discount_code, "active": True})
+        if doc:
+            discount_percent = doc.get("percent_off", 0)
+            # Calculate subtotal (items only, not shipping)
+            items_total = sum(
+                int((item.get("price", 19.99) + (item.get("backPrice", 2.50) if item.get("hasBackPrint") else 0)) * item.get("quantity", 1) * 100)
+                for item in items
+            )
+            discount_amount = int(items_total * discount_percent / 100)
+            if discount_amount > 0:
+                line_items.append({
+                    "price_data": {
+                        "currency": "gbp",
+                        "product_data": {"name": f"Discount ({discount_code} — {discount_percent}% off)"},
+                        "unit_amount": -discount_amount,
+                    },
+                    "quantity": 1,
+                })
+            # Increment usage count
+            await db.discount_codes.update_one({"code": discount_code}, {"$inc": {"uses": 1}})
+
     if not line_items:
         raise HTTPException(status_code=400, detail="No items")
 
@@ -672,17 +710,82 @@ async def download_order_files(order_id: str):
 
 @api_router.get("/pricing")
 async def get_pricing():
+    # Try DB first, fall back to defaults
+    config = await db.config.find_one({"key": "pricing"})
+    if config:
+        return {
+            "base_price": config.get("base_price", 19.99),
+            "back_print_price": config.get("back_print_price", 2.50),
+            "currency": "GBP",
+            "currency_symbol": "£",
+        }
     return {
         "base_price": 19.99,
         "back_print_price": 2.50,
         "currency": "GBP",
         "currency_symbol": "£",
-        "quantity_discounts": [
-            {"min_qty": 10, "discount_percent": 5},
-            {"min_qty": 20, "discount_percent": 10},
-            {"min_qty": 50, "discount_percent": 15}
-        ]
     }
+
+@api_router.patch("/admin/pricing")
+async def update_pricing(data: dict):
+    allowed = {"base_price", "back_print_price"}
+    clean = {k: float(v) for k, v in data.items() if k in allowed}
+    if not clean:
+        raise HTTPException(status_code=400, detail="No valid fields")
+    await db.config.update_one(
+        {"key": "pricing"},
+        {"$set": {**clean, "key": "pricing"}},
+        upsert=True
+    )
+    return {"message": "Pricing updated", **clean}
+
+# ── Discount Codes ──────────────────────────────────────────────────────────
+
+@api_router.get("/admin/discount-codes")
+async def get_discount_codes():
+    codes = await db.discount_codes.find({}, {"_id": 0}).to_list(100)
+    return codes
+
+@api_router.post("/admin/discount-codes")
+async def create_discount_code(data: dict):
+    code = data.get("code", "").upper().strip()
+    percent = int(data.get("percent_off", 0))
+    if not code or not (1 <= percent <= 100):
+        raise HTTPException(status_code=400, detail="Invalid code or percent")
+    existing = await db.discount_codes.find_one({"code": code})
+    if existing:
+        raise HTTPException(status_code=400, detail="Code already exists")
+    doc = {
+        "code": code,
+        "percent_off": percent,
+        "active": True,
+        "uses": 0,
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.discount_codes.insert_one(doc)
+    return doc
+
+@api_router.delete("/admin/discount-codes/{code}")
+async def delete_discount_code(code: str):
+    await db.discount_codes.delete_one({"code": code.upper()})
+    return {"message": "Deleted"}
+
+@api_router.patch("/admin/discount-codes/{code}")
+async def toggle_discount_code(code: str, data: dict):
+    await db.discount_codes.update_one({"code": code.upper()}, {"$set": {"active": data.get("active", True)}})
+    return {"message": "Updated"}
+
+@api_router.post("/validate-discount")
+async def validate_discount(data: dict):
+    code = data.get("code", "").upper().strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="No code provided")
+    doc = await db.discount_codes.find_one({"code": code})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Invalid discount code")
+    if not doc.get("active", True):
+        raise HTTPException(status_code=400, detail="This code is no longer active")
+    return {"code": code, "percent_off": doc["percent_off"], "valid": True}
 
 # ============ ADMIN STATS ============
 
