@@ -41,6 +41,13 @@ export default function AdminPage() {
   const [showReviewForm, setShowReviewForm] = useState(false);
   const [editingReview, setEditingReview] = useState(null);
   const [savingReview, setSavingReview] = useState(false);
+
+  // Pricing & discounts
+  const [pricingForm, setPricingForm] = useState({ base_price: 19.99, back_print_price: 2.50 });
+  const [savingPricing, setSavingPricing] = useState(false);
+  const [discountCodes, setDiscountCodes] = useState([]);
+  const [newCode, setNewCode] = useState({ code: '', percent_off: 10 });
+  const [savingCode, setSavingCode] = useState(false);
   const [reviewForm, setReviewForm] = useState({ name:'', location:'', event:'', rating:5, text:'', verified:true });
   const [reviewPhoto, setReviewPhoto] = useState(null);
   const [stats, setStats] = useState(null);
@@ -52,7 +59,7 @@ export default function AdminPage() {
   const [savingTemplate, setSavingTemplate] = useState(false);
 
   useEffect(() => {
-    if (authed) { fetchStats(); fetchOrders(); fetchTemplates(); fetchReviews(); }
+    if (authed) { fetchStats(); fetchOrders(); fetchTemplates(); fetchReviews(); fetchPricing(); fetchDiscountCodes(); }
   }, [authed]);
 
   const handleLogin = () => {
@@ -131,6 +138,73 @@ export default function AdminPage() {
       body: JSON.stringify({ approved: !review.approved })
     });
     fetchReviews();
+  };
+
+  const fetchPricing = async () => {
+    try {
+      const r = await fetch(`${API}/pricing`);
+      if (r.ok) {
+        const data = await r.json();
+        setPricingForm({ base_price: data.base_price, back_print_price: data.back_print_price });
+      }
+    } catch(e) {}
+  };
+
+  const fetchDiscountCodes = async () => {
+    try {
+      const r = await fetch(`${API}/admin/discount-codes`);
+      if (r.ok) setDiscountCodes(await r.json());
+    } catch(e) {}
+  };
+
+  const handleSavePricing = async () => {
+    setSavingPricing(true);
+    try {
+      const r = await fetch(`${API}/admin/pricing`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ base_price: parseFloat(pricingForm.base_price), back_print_price: parseFloat(pricingForm.back_print_price) })
+      });
+      if (!r.ok) throw new Error();
+      toast.success('Pricing updated!');
+    } catch(e) { toast.error('Failed to update pricing'); }
+    finally { setSavingPricing(false); }
+  };
+
+  const handleAddDiscountCode = async () => {
+    if (!newCode.code.trim()) { toast.error('Enter a code'); return; }
+    setSavingCode(true);
+    try {
+      const r = await fetch(`${API}/admin/discount-codes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code: newCode.code.toUpperCase(), percent_off: parseInt(newCode.percent_off) })
+      });
+      if (!r.ok) {
+        const err = await r.json();
+        throw new Error(err.detail || 'Failed');
+      }
+      toast.success(`Code ${newCode.code.toUpperCase()} created!`);
+      setNewCode({ code: '', percent_off: 10 });
+      fetchDiscountCodes();
+    } catch(e) { toast.error(e.message || 'Failed to create code'); }
+    finally { setSavingCode(false); }
+  };
+
+  const handleDeleteCode = async (code) => {
+    if (!window.confirm(`Delete code ${code}?`)) return;
+    await fetch(`${API}/admin/discount-codes/${code}`, { method: 'DELETE' });
+    toast.success('Code deleted');
+    fetchDiscountCodes();
+  };
+
+  const handleToggleCode = async (code, active) => {
+    await fetch(`${API}/admin/discount-codes/${code}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active: !active })
+    });
+    fetchDiscountCodes();
   };
 
   const updateStatus = async (orderId, status) => {
@@ -247,7 +321,7 @@ export default function AdminPage() {
 
         {/* Tabs */}
         <div className="flex gap-2 border-b border-gray-200">
-          {[{id:'orders',label:'Orders',icon:ShoppingBag},{id:'templates',label:'Templates',icon:Shirt},{id:'reviews',label:'Reviews',icon:Star}].map(tab => (
+          {[{id:'orders',label:'Orders',icon:ShoppingBag},{id:'templates',label:'Templates',icon:Shirt},{id:'reviews',label:'Reviews',icon:Star},{id:'settings',label:'Settings',icon:Edit2}].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-5 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab===tab.id?'border-[#FF2E63] text-[#FF2E63]':'border-transparent text-gray-500 hover:text-gray-700'}`}>
               <tab.icon className="w-4 h-4" />{tab.label}
@@ -556,6 +630,115 @@ export default function AdminPage() {
                 </div>
               ))}
               {reviews.length === 0 && <div className="text-center py-12 text-gray-400">No reviews yet — add your first one!</div>}
+            </div>
+          </div>
+        )}
+
+        {/* ── Settings Tab ── */}
+        {activeTab === 'settings' && (
+          <div className="space-y-8">
+
+            {/* Pricing */}
+            <div className="bg-white rounded-2xl shadow-sm p-6 space-y-5">
+              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">PRICING</h2>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <Label>Base T-Shirt Price (£)</Label>
+                  <div className="relative mt-1">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">£</span>
+                    <Input
+                      type="number" step="0.01" min="0"
+                      value={pricingForm.base_price}
+                      onChange={e => setPricingForm(f => ({...f, base_price: e.target.value}))}
+                      className="pl-7"
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">Price per shirt (excluding back print)</p>
+                </div>
+                <div>
+                  <Label>Back Print Add-on (£)</Label>
+                  <div className="relative mt-1">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">£</span>
+                    <Input
+                      type="number" step="0.01" min="0"
+                      value={pricingForm.back_print_price}
+                      onChange={e => setPricingForm(f => ({...f, back_print_price: e.target.value}))}
+                      className="pl-7"
+                    />
+                  </div>
+                  <p className="text-xs text-gray-400 mt-1">Extra cost per shirt for back name print</p>
+                </div>
+              </div>
+              <div className="p-4 bg-gray-50 rounded-xl text-sm text-gray-600">
+                <p className="font-medium text-gray-700 mb-1">Preview</p>
+                <p>1 shirt: <strong>£{parseFloat(pricingForm.base_price || 0).toFixed(2)}</strong></p>
+                <p>1 shirt + back print: <strong>£{(parseFloat(pricingForm.base_price || 0) + parseFloat(pricingForm.back_print_price || 0)).toFixed(2)}</strong></p>
+              </div>
+              <Button onClick={handleSavePricing} disabled={savingPricing} className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-8 py-3 font-bold uppercase tracking-wider">
+                {savingPricing ? 'Saving...' : 'Save Pricing'}
+              </Button>
+            </div>
+
+            {/* Discount Codes */}
+            <div className="bg-white rounded-2xl shadow-sm p-6 space-y-5">
+              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">DISCOUNT CODES</h2>
+
+              {/* Add new code */}
+              <div className="p-4 bg-gray-50 rounded-xl space-y-3">
+                <p className="font-medium text-gray-700 text-sm">Create New Code</p>
+                <div className="grid sm:grid-cols-3 gap-3">
+                  <div className="sm:col-span-2">
+                    <Label>Code</Label>
+                    <Input
+                      value={newCode.code}
+                      onChange={e => setNewCode(c => ({...c, code: e.target.value.toUpperCase()}))}
+                      placeholder="e.g. STAG10"
+                      className="mt-1 uppercase"
+                    />
+                  </div>
+                  <div>
+                    <Label>% Off</Label>
+                    <div className="relative mt-1">
+                      <Input
+                        type="number" min="1" max="100"
+                        value={newCode.percent_off}
+                        onChange={e => setNewCode(c => ({...c, percent_off: e.target.value}))}
+                      />
+                      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400">%</span>
+                    </div>
+                  </div>
+                </div>
+                <Button onClick={handleAddDiscountCode} disabled={savingCode} className="bg-[#252A34] hover:bg-black text-white rounded-full px-6 py-2.5 font-bold uppercase tracking-wider text-sm gap-2">
+                  <Plus className="w-4 h-4" /> {savingCode ? 'Creating...' : 'Create Code'}
+                </Button>
+              </div>
+
+              {/* Existing codes */}
+              <div className="space-y-3">
+                {discountCodes.length === 0 ? (
+                  <p className="text-center py-6 text-gray-400">No discount codes yet</p>
+                ) : discountCodes.map(code => (
+                  <div key={code.code} className="flex items-center justify-between p-4 border border-gray-100 rounded-xl">
+                    <div className="flex items-center gap-3">
+                      <div className="bg-[#252A34] text-white px-3 py-1.5 rounded-lg font-['Anton'] tracking-wider text-sm">{code.code}</div>
+                      <div>
+                        <p className="font-bold text-[#FF2E63]">{code.percent_off}% off</p>
+                        <p className="text-xs text-gray-400">{code.uses || 0} uses</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => handleToggleCode(code.code, code.active)}
+                        className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+                        {code.active ? 'Active' : 'Inactive'}
+                      </button>
+                      <button onClick={() => handleDeleteCode(code.code)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
