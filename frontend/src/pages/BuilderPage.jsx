@@ -506,6 +506,11 @@ export default function BuilderPage() {
   };
 
   const canProceed = () => step === 1 ? !!selectedTemplate : true;
+
+  const goNextStep = () => {
+    setStep(s => s + 1);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
   const hasText = line1Text||line2Text||line3Text;
 
   return (
@@ -791,7 +796,7 @@ export default function BuilderPage() {
             {/* Desktop nav buttons */}
             <div className="hidden lg:flex gap-4">
               {step>1&&<Button variant="outline" onClick={()=>setStep(step-1)} className="flex-1 rounded-full py-6">Back</Button>}
-              {step<4&&<Button onClick={()=>setStep(step+1)} disabled={!canProceed()} className="flex-1 bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 font-bold uppercase tracking-wider disabled:opacity-50">Next Step <ChevronRight className="w-5 h-5 ml-2"/></Button>}
+              {step<4&&<Button onClick={goNextStep} disabled={!canProceed()} className="flex-1 bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 font-bold uppercase tracking-wider disabled:opacity-50">Next Step <ChevronRight className="w-5 h-5 ml-2"/></Button>}
             </div>
           </div>
 
@@ -878,7 +883,7 @@ export default function BuilderPage() {
               {/* Mobile nav — below preview */}
               <div className="mt-5 lg:hidden flex gap-4">
                 {step>1&&<Button variant="outline" onClick={()=>setStep(step-1)} className="flex-1 rounded-full py-5">Back</Button>}
-                {step<4&&<Button onClick={()=>setStep(step+1)} disabled={!canProceed()} className="flex-1 bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-5 font-bold uppercase tracking-wider disabled:opacity-50">Next Step <ChevronRight className="w-5 h-5 ml-2"/></Button>}
+                {step<4&&<Button onClick={goNextStep} disabled={!canProceed()} className="flex-1 bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-5 font-bold uppercase tracking-wider disabled:opacity-50">Next Step <ChevronRight className="w-5 h-5 ml-2"/></Button>}
               </div>
             </div>
           </div>

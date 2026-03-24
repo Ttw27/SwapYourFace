@@ -267,9 +267,27 @@ export default function CartPage() {
                       ? <><Loader2 className="w-5 h-5 mr-2 animate-spin" />Redirecting to payment...</>
                       : <><Lock className="w-5 h-5 mr-2" />Pay Securely with Stripe</>}
                   </Button>
-                  <p className="text-xs text-center text-gray-400 flex items-center justify-center gap-1">
-                    <ShieldCheck className="w-3.5 h-3.5" /> You'll be taken to Stripe's secure checkout page
-                  </p>
+                  {/* Stripe trust signals */}
+                  <div className="border border-gray-100 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-green-600" />
+                      <span className="text-xs font-medium text-gray-600">Secured by Stripe</span>
+                    </div>
+                    <p className="text-xs text-center text-gray-400 leading-relaxed">
+                      Your payment is processed by <strong className="text-gray-600">Stripe</strong> — one of the world's most trusted payment platforms. We never see or store your card details.
+                    </p>
+                    {/* Card logos */}
+                    <div className="flex items-center justify-center gap-3">
+                      {['VISA', 'MC', 'AMEX', 'APPLE PAY'].map(card => (
+                        <span key={card} className="text-xs font-bold text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">{card}</span>
+                      ))}
+                    </div>
+                    <p className="text-xs text-center">
+                      <a href="https://stripe.com" target="_blank" rel="noreferrer" className="text-[#FF2E63] hover:underline">
+                        Learn more about Stripe →
+                      </a>
+                    </p>
+                  </div>
                 </motion.div>
               )}
             </AnimatePresence>
