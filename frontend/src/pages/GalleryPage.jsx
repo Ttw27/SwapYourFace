@@ -9,9 +9,14 @@ export default function GalleryPage() {
   const { templates, fetchTemplates, templatesLoading } = useStore();
   const [filter, setFilter] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
+  const [lowestPrice, setLowestPrice] = useState(null);
 
   useEffect(() => {
     if (templates.length === 0) fetchTemplates();
+    fetch(`${process.env.REACT_APP_BACKEND_URL}/api/pricing`)
+      .then(r => r.ok ? r.json() : {})
+      .then(data => { if (data.tiers) setLowestPrice(Math.min(...data.tiers.map(t => t.price))); })
+      .catch(() => {});
   }, [templates.length, fetchTemplates]);
 
   const filteredTemplates = templates.filter(template => {

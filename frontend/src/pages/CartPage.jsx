@@ -45,9 +45,21 @@ export default function CartPage() {
     }
   }, [searchParams]);
 
+  // Tier pricing
+  const getTierPrice = (qty) => {
+    const tiers = pricing.tiers || [];
+    for (const tier of [...tiers].sort((a,b) => a.min_qty - b.min_qty)) {
+      if (qty >= tier.min_qty && qty <= tier.max_qty) return tier.price;
+    }
+    return tiers.length ? tiers[tiers.length-1].price : 17.99;
+  };
+  const totalQty = cart.reduce((sum, item) => sum + (item.quantity || 1), 0);
+  const tierPrice = getTierPrice(totalQty);
+  const activeTier = (pricing.tiers || []).find(t => totalQty >= t.min_qty && totalQty <= t.max_qty);
+
   const subtotal = cart.reduce((sum, item) => {
     const back = item.hasBackPrint ? (item.backPrice || pricing.back_print_price || 2.50) : 0;
-    return sum + ((item.price || 19.99) + back) * (item.quantity || 1);
+    return sum + (tierPrice + back) * (item.quantity || 1);
   }, 0);
   const shippingCost = shipping === 'express' ? 8.99 : 0;
   const discountAmount = discountApplied ? Math.round(subtotal * discountApplied.percent_off) / 100 : 0;
@@ -249,7 +261,7 @@ export default function CartPage() {
                             </div>
                           </div>
                           <div className="text-right flex-shrink-0">
-                            <p className="font-bold text-[#FF2E63]">£{((item.price || 19.99) + (item.hasBackPrint ? (item.backPrice || 2.50) : 0)).toFixed(2)}</p>
+                            <p className="font-bold text-[#FF2E63]">£{(tierPrice + (item.hasBackPrint ? (item.backPrice || pricing.back_print_price || 2.50) : 0)).toFixed(2)}</p>
                             <button onClick={() => removeFromCart(item.cartId)} className="text-gray-400 hover:text-red-500 transition-colors mt-2">
                               <Trash2 className="w-4 h-4" />
                             </button>
@@ -258,6 +270,24 @@ export default function CartPage() {
                       </div>
                     ))}
                   </div>
+                  {/* Active tier banner */}
+                  {activeTier && (
+                    <div className={`mt-4 p-3 rounded-xl border text-sm flex items-center justify-between ${totalQty >= 21 ? 'bg-[#FF2E63]/5 border-[#FF2E63]/20' : 'bg-[#FFF9E6] border-[#FFE600]'}`}>
+                      <span className="font-medium text-[#252A34]">
+                        {activeTier.label} — <strong>£{tierPrice.toFixed(2)}</strong> per shirt
+                      </span>
+                      {totalQty < 21 && (
+                        <span className="text-xs text-gray-500">
+                          {(() => {
+                            const tiers = pricing.tiers || [];
+                            const next = tiers.find(t => t.min_qty > totalQty);
+                            return next ? `Add ${next.min_qty - totalQty} more for £${next.price.toFixed(2)}/shirt` : null;
+                          })()}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
                   {/* Shipping selector */}
                   <div className="mt-6 space-y-3">
                     <p className="font-bold text-[#252A34] text-sm">Delivery Option</p>
@@ -355,7 +385,7 @@ export default function CartPage() {
                 {cart.map((item) => (
                   <div key={item.cartId} className="flex justify-between text-sm">
                     <span className="text-gray-600 truncate flex-1 mr-2">{item.templateName} ({item.size})</span>
-                    <span className="font-medium text-[#252A34] flex-shrink-0">£{((item.price || 19.99) + (item.hasBackPrint ? (item.backPrice || 2.50) : 0)).toFixed(2)}</span>
+                    <span className="font-medium text-[#252A34] flex-shrink-0">£{(tierPrice + (item.hasBackPrint ? (item.backPrice || pricing.back_print_price || 2.50) : 0)).toFixed(2)}</span>
                   </div>
                 ))}
               </div>

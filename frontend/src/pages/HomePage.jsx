@@ -11,11 +11,16 @@ const WHATSAPP = 'https://wa.me/447822032847?text=' + encodeURIComponent("Hi! I'
 export default function HomePage() {
   const { templates } = useStore();
   const [reviews, setReviews] = useState([]);
+  const [pricingTiers, setPricingTiers] = useState([]);
 
   useEffect(() => {
     fetch(`${API}/reviews`)
       .then(r => r.ok ? r.json() : [])
       .then(data => setReviews(data.slice(0, 3)))
+      .catch(() => {});
+    fetch(`${API}/pricing`)
+      .then(r => r.ok ? r.json() : {})
+      .then(data => setPricingTiers(data.tiers || []))
       .catch(() => {});
   }, []);
 
@@ -167,6 +172,32 @@ export default function HomePage() {
                 </Button>
               </Link>
             </div>
+          </div>
+        </section>
+      )}
+
+      {/* Pricing table */}
+      {pricingTiers.length > 0 && (
+        <section className="py-16 bg-[#F7F7F7]">
+          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-12">
+            <div className="text-center mb-10">
+              <h2 className="font-['Anton'] text-3xl sm:text-4xl text-[#252A34] tracking-wide mb-3">THE MORE YOU ORDER, THE LESS YOU PAY</h2>
+              <p className="text-gray-500">Volume pricing — automatically applied at checkout</p>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+              {pricingTiers.map((tier, i) => {
+                const isLowest = tier.price === Math.min(...pricingTiers.map(t => t.price));
+                return (
+                  <div key={i} className={`rounded-2xl p-4 text-center border-2 transition-all ${isLowest ? 'border-[#FF2E63] bg-[#FF2E63]/5 shadow-md' : 'border-gray-200 bg-white'}`}>
+                    {isLowest && <span className="inline-block bg-[#FF2E63] text-white text-xs font-bold px-2 py-0.5 rounded-full mb-2 uppercase tracking-wide">Best Value</span>}
+                    <p className="font-['Anton'] text-2xl text-[#252A34]">£{tier.price.toFixed(2)}</p>
+                    <p className="text-xs text-gray-500 mt-1">per shirt</p>
+                    <p className="text-sm font-medium text-gray-700 mt-2">{tier.label}</p>
+                  </div>
+                );
+              })}
+            </div>
+            <p className="text-center text-xs text-gray-400 mt-6">All prices exclude back print add-on. Free UK delivery on all orders.</p>
           </div>
         </section>
       )}

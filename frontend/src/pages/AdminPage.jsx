@@ -43,7 +43,14 @@ export default function AdminPage() {
   const [savingReview, setSavingReview] = useState(false);
 
   // Pricing & discounts
-  const [pricingForm, setPricingForm] = useState({ base_price: 19.99, back_print_price: 2.50 });
+  const DEFAULT_TIERS = [
+    { min_qty: 1,  max_qty: 1,    price: 17.99, label: '1 shirt' },
+    { min_qty: 2,  max_qty: 6,    price: 15.99, label: '2–6 shirts' },
+    { min_qty: 7,  max_qty: 12,   price: 13.99, label: '7–12 shirts' },
+    { min_qty: 13, max_qty: 20,   price: 12.99, label: '13–20 shirts' },
+    { min_qty: 21, max_qty: 9999, price: 11.99, label: '21+ shirts' },
+  ];
+  const [pricingForm, setPricingForm] = useState({ back_print_price: 2.50, tiers: DEFAULT_TIERS });
   const [savingPricing, setSavingPricing] = useState(false);
   const [discountCodes, setDiscountCodes] = useState([]);
   const [newCode, setNewCode] = useState({ code: '', percent_off: 10 });
@@ -145,7 +152,7 @@ export default function AdminPage() {
       const r = await fetch(`${API}/pricing`);
       if (r.ok) {
         const data = await r.json();
-        setPricingForm({ base_price: data.base_price, back_print_price: data.back_print_price });
+        setPricingForm({ back_print_price: data.back_print_price, tiers: data.tiers || DEFAULT_TIERS });
       }
     } catch(e) {}
   };
@@ -163,7 +170,7 @@ export default function AdminPage() {
       const r = await fetch(`${API}/admin/pricing`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ base_price: parseFloat(pricingForm.base_price), back_print_price: parseFloat(pricingForm.back_print_price) })
+        body: JSON.stringify({ back_print_price: parseFloat(pricingForm.back_print_price), tiers: pricingForm.tiers })
       });
       if (!r.ok) throw new Error();
       toast.success('Pricing updated!');
@@ -640,40 +647,56 @@ export default function AdminPage() {
 
             {/* Pricing */}
             <div className="bg-white rounded-2xl shadow-sm p-6 space-y-5">
-              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">PRICING</h2>
-              <div className="grid sm:grid-cols-2 gap-4">
-                <div>
-                  <Label>Base T-Shirt Price (£)</Label>
-                  <div className="relative mt-1">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">£</span>
-                    <Input
-                      type="number" step="0.01" min="0"
-                      value={pricingForm.base_price}
-                      onChange={e => setPricingForm(f => ({...f, base_price: e.target.value}))}
-                      className="pl-7"
-                    />
+              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">PRICING TIERS</h2>
+              <p className="text-sm text-gray-500">Set prices per shirt based on quantity. The lowest price shows as "from £X" across the site.</p>
+
+              {/* Tier editor */}
+              <div className="space-y-3">
+                {(pricingForm.tiers || []).map((tier, i) => (
+                  <div key={i} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-gray-700">{tier.label}</p>
+                      <p className="text-xs text-gray-400">{tier.min_qty === tier.max_qty ? `${tier.min_qty} shirt` : tier.max_qty === 9999 ? `${tier.min_qty}+ shirts` : `${tier.min_qty}–${tier.max_qty} shirts`}</p>
+                    </div>
+                    <div className="relative w-28">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">£</span>
+                      <input
+                        type="number" step="0.01" min="0"
+                        value={tier.price}
+                        onChange={e => {
+                          const updated = [...pricingForm.tiers];
+                          updated[i] = { ...updated[i], price: parseFloat(e.target.value) || 0 };
+                          setPricingForm(f => ({ ...f, tiers: updated }));
+                        }}
+                        className="w-full pl-7 pr-2 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-[#FF2E63]/20 focus:border-[#FF2E63]"
+                      />
+                    </div>
+                    <span className="text-xs text-gray-400 w-20 text-right">per shirt</span>
                   </div>
-                  <p className="text-xs text-gray-400 mt-1">Price per shirt (excluding back print)</p>
-                </div>
-                <div>
-                  <Label>Back Print Add-on (£)</Label>
-                  <div className="relative mt-1">
-                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">£</span>
-                    <Input
-                      type="number" step="0.01" min="0"
-                      value={pricingForm.back_print_price}
-                      onChange={e => setPricingForm(f => ({...f, back_print_price: e.target.value}))}
-                      className="pl-7"
-                    />
-                  </div>
-                  <p className="text-xs text-gray-400 mt-1">Extra cost per shirt for back name print</p>
-                </div>
+                ))}
               </div>
+
+              {/* Back print */}
+              <div>
+                <Label>Back Print Add-on (£)</Label>
+                <div className="relative mt-1 w-40">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">£</span>
+                  <Input
+                    type="number" step="0.01" min="0"
+                    value={pricingForm.back_print_price}
+                    onChange={e => setPricingForm(f => ({...f, back_print_price: e.target.value}))}
+                    className="pl-7"
+                  />
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Extra cost per shirt for back name print</p>
+              </div>
+
               <div className="p-4 bg-gray-50 rounded-xl text-sm text-gray-600">
-                <p className="font-medium text-gray-700 mb-1">Preview</p>
-                <p>1 shirt: <strong>£{parseFloat(pricingForm.base_price || 0).toFixed(2)}</strong></p>
-                <p>1 shirt + back print: <strong>£{(parseFloat(pricingForm.base_price || 0) + parseFloat(pricingForm.back_print_price || 0)).toFixed(2)}</strong></p>
+                <p className="font-medium text-gray-700 mb-2">Site will show</p>
+                <p>From <strong className="text-[#FF2E63]">£{Math.min(...(pricingForm.tiers||[]).map(t=>t.price)).toFixed(2)}</strong> per shirt</p>
+                <p className="text-xs text-gray-400 mt-1">Back print: +£{parseFloat(pricingForm.back_print_price||0).toFixed(2)} per shirt</p>
               </div>
+
               <Button onClick={handleSavePricing} disabled={savingPricing} className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-8 py-3 font-bold uppercase tracking-wider">
                 {savingPricing ? 'Saving...' : 'Save Pricing'}
               </Button>

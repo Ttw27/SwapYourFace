@@ -392,7 +392,23 @@ export default function BuilderPage() {
   };
 
   const getTotalQty = () => Object.values(selectedSizes).reduce((s, q) => s + q, 0);
-  const getTotal = () => getTotalQty() * pricing.base_price + (hasBackPrint ? getTotalQty() * pricing.back_print_price : 0);
+
+  const getTierPrice = (qty) => {
+    const tiers = pricing.tiers || [];
+    for (const tier of [...tiers].sort((a,b) => a.min_qty - b.min_qty)) {
+      if (qty >= tier.min_qty && qty <= tier.max_qty) return tier.price;
+    }
+    return tiers.length ? tiers[tiers.length-1].price : 17.99;
+  };
+
+  const getActiveTier = (qty) => (pricing.tiers || []).find(t => qty >= t.min_qty && qty <= t.max_qty);
+  const getNextTier = (qty) => [...(pricing.tiers || [])].sort((a,b) => a.min_qty - b.min_qty).find(t => t.min_qty > qty);
+
+  const getTotal = () => {
+    const qty = getTotalQty();
+    const pricePerShirt = getTierPrice(qty);
+    return qty * pricePerShirt + (hasBackPrint ? qty * (pricing.back_print_price || 2.50) : 0);
+  };
 
   // Reset sizes when type changes
   useEffect(() => { setSelectedSizes({}); }, [shirtType]);
@@ -481,7 +497,7 @@ export default function BuilderPage() {
         backNumber:'', size, quantity:1, headPlacement,
         originalPhotoUrl: originalPhoto?.original_url, headUrl: headCutout?.head_url,
         previewUrl,
-        price: pricing.base_price, backPrice: hasBackPrint?pricing.back_print_price:0,
+        price: getTierPrice(getTotalQty()), backPrice: hasBackPrint?(pricing.back_print_price||2.50):0,
       });
     });
     addMultipleToCart(items);
@@ -501,7 +517,7 @@ export default function BuilderPage() {
 
   const handleAddPartyToCart = () => {
     if (partyMembers.length === 0) { toast.error('Please add at least one person'); return; }
-    addMultipleToCart(partyMembers.map(m=>({...m,quantity:1,price:pricing.base_price,backPrice:m.hasBackPrint?pricing.back_print_price:0})));
+    addMultipleToCart(partyMembers.map(m=>({...m,quantity:1,price:getTierPrice(partyMembers.length),backPrice:m.hasBackPrint?(pricing.back_print_price||2.50):0})));
     toast.success(`Added ${partyMembers.length} items to cart!`);
     navigate('/cart');
   };
@@ -724,6 +740,36 @@ export default function BuilderPage() {
                 <motion.div key="s4" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}} className="bg-white rounded-2xl shadow-sm p-6">
                   <h3 className="font-['Anton'] text-lg text-[#252A34] mb-4 tracking-wide">4. {builderMode==='bulk'?'SIZES & QUANTITIES':'ADD TO ORDER'}</h3>
 
+                  {builderMode==='bulk' && (
+                    <div className="mb-4 p-3 rounded-xl border text-sm bg-[#FFF9E6] border-[#FFE600]">
+                      {getTotalQty() === 0 ? (
+                        <div className="space-y-1">
+                          <p className="font-bold text-[#252A34]">Volume pricing — the more you order, the less you pay!</p>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 mt-2">
+                            {(pricing.tiers || []).map(t => (
+                              <div key={t.min_qty} className="flex justify-between text-xs bg-white rounded-lg px-2 py-1.5 border border-gray-100">
+                                <span className="text-gray-500">{t.label}</span>
+                                <span className="font-bold text-[#252A34]">£{t.price.toFixed(2)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="font-bold text-[#252A34]">{getActiveTier(getTotalQty())?.label} — </span>
+                            <span className="font-bold text-[#FF2E63]">£{getTierPrice(getTotalQty()).toFixed(2)} per shirt</span>
+                          </div>
+                          {getNextTier(getTotalQty()) && (
+                            <span className="text-xs text-gray-500">
+                              +{getNextTier(getTotalQty()).min_qty - getTotalQty()} more → £{getNextTier(getTotalQty()).price.toFixed(2)}/shirt
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
                   {builderMode==='bulk'&&(
                     <>
                       {/* T-shirt colour selector */}
@@ -828,7 +874,7 @@ export default function BuilderPage() {
                     <>
                       <div className="bg-[#252A34] text-white rounded-xl p-5">
                         <div className="flex justify-between mb-2"><span>Quantity</span><span className="font-bold">{getTotalQty()} shirts</span></div>
-                        <div className="flex justify-between mb-2"><span>Per shirt</span><span>£{pricing.base_price?.toFixed(2)}</span></div>
+                        <div className="flex justify-between mb-2"><span>Per shirt</span><span className="font-bold text-[#F9ED69]">£{getTierPrice(getTotalQty()).toFixed(2)}</span></div>
                         {hasBackPrint&&<div className="flex justify-between mb-2"><span>Back print</span><span>+£{pricing.back_print_price?.toFixed(2)}</span></div>}
                         <div className="border-t border-white/20 mt-3 pt-3 flex justify-between"><span className="text-xl font-bold">Total</span><span className="text-2xl font-bold text-[#F9ED69]">£{getTotal().toFixed(2)}</span></div>
                       </div>
