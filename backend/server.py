@@ -688,29 +688,79 @@ async def download_order_files(order_id: str):
     order = await db.orders.find_one({"id": order_id}, {"_id": 0})
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
-    
-    zip_filename = f"order_{order['order_number']}.zip"
+
+    zip_filename = f"order_{order.get('order_number', order_id)}.zip"
     zip_path = UPLOAD_DIR / zip_filename
-    
+
+    def fetch_url(url, timeout=10):
+        try:
+            resp = requests.get(url, timeout=timeout)
+            return resp.content if resp.status_code == 200 else None
+        except Exception as e:
+            logger.error(f"Fetch failed {url}: {e}")
+            return None
+
     try:
         with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            order_json = json.dumps(order, indent=2, default=str)
-            zipf.writestr("order_details.json", order_json)
+            # Human-readable summary
+            lines = [
+                f"ORDER: {order.get('order_number', order_id)}",
+                f"Customer: {order.get('customer_name', '')}",
+                f"Email: {order.get('customer_email', '')}",
+                f"Phone: {order.get('customer_phone', '')}",
+                f"Status: {order.get('status', '')}",
+                f"Total: £{order.get('total_amount', 0):.2f}",
+                f"Date: {order.get('created_at', '')}",
+                "", "ITEMS:",
+            ]
             for idx, item in enumerate(order.get("items", [])):
-                person_prefix = f"Person{idx+1:02d}"
-                if item.get("original_photo_url"):
-                    original_filename = item["original_photo_url"].split("/")[-1]
-                    original_path = ORIGINALS_DIR / original_filename
-                    if original_path.exists():
-                        zipf.write(original_path, f"{person_prefix}_Original{original_path.suffix}")
-                if item.get("head_cutout_id"):
-                    head_path = HEADS_DIR / f"{item['head_cutout_id']}.png"
-                    if head_path.exists():
-                        zipf.write(head_path, f"{person_prefix}_Head.png")
-        return FileResponse(zip_path, filename=zip_filename, media_type="application/zip")
+                lines += [
+                    f"", f"  Person {idx+1}:",
+                    f"    Template: {item.get('templateName', '')}",
+                    f"    Size: {item.get('size', '')} ({item.get('shirtType', '')})",
+                    f"    Title: {item.get('titleText', '')}",
+                    f"    Subtitle: {item.get('subtitleText', '')}",
+                    f"    Back Print: {'Yes - ' + item.get('backName','') if item.get('hasBackPrint') else 'No'}",
+                    f"    Face URL: {item.get('headUrl') or item.get('head_url') or 'N/A'}",
+                    f"    Original: {item.get('originalPhotoUrl') or item.get('original_photo_url') or 'N/A'}",
+                ]
+            zipf.writestr("order_summary.txt", "\n".join(lines))
+            zipf.writestr("order_details.json", json.dumps(order, indent=2, default=str))
+
+            for idx, item in enumerate(order.get("items", [])):
+                p = f"Person{idx+1:02d}"
+
+                # Face PNG - Cloudinary or local
+                head_url = item.get("headUrl") or item.get("head_url", "")
+                if head_url:
+                    if head_url.startswith("http"):
+                        data = fetch_url(head_url)
+                        if data: zipf.writestr(f"{p}_Face.png", data)
+                    elif head_url.startswith("/api/files/heads/"):
+                        filename = head_url.split("/")[-1]
+                        local = HEADS_DIR / filename
+                        if local.exists():
+                            zipf.write(local, f"{p}_Face.png")
+
+                # Original photo
+                orig = item.get("originalPhotoUrl") or item.get("original_photo_url", "")
+                if orig and orig.startswith("http"):
+                    data = fetch_url(orig)
+                    if data:
+                        ext = orig.split(".")[-1].split("?")[0][:4] or "jpg"
+                        zipf.writestr(f"{p}_OriginalPhoto.{ext}", data)
+
+                # Preview
+                preview = item.get("previewUrl", "")
+                if preview and preview.startswith("http"):
+                    data = fetch_url(preview)
+                    if data: zipf.writestr(f"{p}_Preview.jpg", data)
+
+        return FileResponse(zip_path, filename=zip_filename, media_type="application/zip",
+                           headers={"Content-Disposition": f"attachment; filename={zip_filename}"})
     except Exception as e:
         logger.error(f"Error creating zip: {e}")
-        raise HTTPException(status_code=500, detail="Error creating download file")
+        raise HTTPException(status_code=500, detail=f"Error creating download: {str(e)}")
 
 # ============ PRICING ============
 
