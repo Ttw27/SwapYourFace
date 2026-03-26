@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion } from 'framer-motion';
-import { Upload, MessageCircle, Send, CheckCircle, X, Star, Palette } from 'lucide-react';
+import { Upload, MessageCircle, Send, CheckCircle, X, Star, Palette, Mail } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,13 +17,7 @@ export default function CustomOrderPage() {
   const [submitted, setSubmitted] = useState(false);
   const setF = (k,v) => setForm(f=>({...f,[k]:v}));
 
-  const handleSubmit = async () => {
-    if (!form.name.trim() || !form.email.trim() || !form.phone.trim()) {
-      toast.error('Please fill in your name, email and phone'); return;
-    }
-
-    // Build WhatsApp message with their details
-    const msg = `Hi! I'd like a custom order 👋
+  const buildMessage = () => `Hi! I'd like a custom order 👋
 
 Name: ${form.name}
 Email: ${form.email}
@@ -31,12 +25,36 @@ Phone: ${form.phone}
 Template: ${form.template || 'Not sure yet'}
 Quantity: ${form.quantity || 'Not sure yet'}
 Notes: ${form.notes || 'None'}
+${photo ? '\nI have a photo ready to send!' : ''}`;
 
-${photo ? 'I have a photo ready to send!' : ''}`;
-
-    // Open WhatsApp with pre-filled message
-    window.open(`${WHATSAPP}?text=${encodeURIComponent(msg)}`, '_blank');
+  const handleWhatsApp = () => {
+    if (!form.name.trim() || !form.phone.trim()) {
+      toast.error('Please enter your name and phone number'); return;
+    }
+    window.open(`${WHATSAPP}?text=${encodeURIComponent(buildMessage())}`, '_blank');
     setSubmitted(true);
+  };
+
+  const handleEmail = async () => {
+    if (!form.name.trim() || !form.email.trim() || !form.phone.trim()) {
+      toast.error('Please enter your name, email and phone'); return;
+    }
+    setSubmitting(true);
+    try {
+      const fd = new FormData();
+      Object.entries(form).forEach(([k, v]) => fd.append(k, v));
+      if (photo) fd.append('photo', photo);
+      const res = await fetch(`${process.env.REACT_APP_BACKEND_URL}/api/custom-order`, {
+        method: 'POST',
+        body: fd,
+      });
+      if (!res.ok) throw new Error('Failed to send');
+      setSubmitted(true);
+    } catch(e) {
+      toast.error('Failed to send — please try WhatsApp instead');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   if (submitted) {
@@ -133,13 +151,20 @@ ${photo ? 'I have a photo ready to send!' : ''}`;
             <p>After clicking the button below, WhatsApp will open with your details pre-filled. Just send the message and attach your photo directly in the chat!</p>
           </div>
 
-          <Button onClick={handleSubmit} disabled={submitting}
-            className="w-full bg-[#25D366] hover:bg-[#20b958] text-white rounded-full py-6 text-lg font-bold uppercase tracking-wider gap-3">
-            <MessageCircle className="w-5 h-5" />
-            Send via WhatsApp
-          </Button>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <Button onClick={handleWhatsApp}
+              className="w-full bg-[#25D366] hover:bg-[#20b958] text-white rounded-full py-5 font-bold uppercase tracking-wider gap-2">
+              <MessageCircle className="w-5 h-5" />
+              Send via WhatsApp
+            </Button>
+            <Button onClick={handleEmail} disabled={submitting} variant="outline"
+              className="w-full rounded-full py-5 font-bold uppercase tracking-wider gap-2 border-[#252A34] text-[#252A34] hover:bg-[#252A34] hover:text-white">
+              <Mail className="w-5 h-5" />
+              {submitting ? 'Sending...' : 'Send Enquiry'}
+            </Button>
+          </div>
 
-          <p className="text-xs text-center text-gray-400">We typically respond within the hour during business hours</p>
+          <p className="text-xs text-center text-gray-400">WhatsApp is fastest — we typically respond within the hour</p>
         </div>
       </div>
     </div>
