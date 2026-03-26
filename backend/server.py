@@ -548,11 +548,17 @@ async def create_checkout_session(data: dict):
     success_url = data.get("success_url", "")
     cancel_url = data.get("cancel_url", "")
 
+    # Get tier pricing
+    tiers, back_print_price_config = await get_pricing_config()
+    total_qty = sum(item.get("quantity", 1) for item in items)
+    tier_price = get_tier_price(tiers, total_qty)
+
     line_items = []
     for item in items:
-        base_price = item.get("price", 19.99)
+        # Use tier price (passed from frontend) or recalculate
+        base_price = item.get("price", tier_price)
         has_back = item.get("hasBackPrint", False)
-        back_price = item.get("backPrice", 2.50) if has_back else 0
+        back_price = item.get("backPrice", back_print_price_config) if has_back else 0
         unit_amount = int((base_price + back_price) * 100)
         name = item.get("templateName", "Custom T-Shirt")
         size = item.get("size", "")
@@ -709,35 +715,54 @@ async def download_order_files(order_id: str):
 # ============ PRICING ============
 
 @api_router.get("/pricing")
-async def get_pricing():
-    # Try DB first, fall back to defaults
+DEFAULT_TIERS = [
+    {"min_qty": 1,  "max_qty": 1,  "price": 17.99, "label": "1 shirt"},
+    {"min_qty": 2,  "max_qty": 6,  "price": 15.99, "label": "2–6 shirts"},
+    {"min_qty": 7,  "max_qty": 12, "price": 13.99, "label": "7–12 shirts"},
+    {"min_qty": 13, "max_qty": 20, "price": 12.99, "label": "13–20 shirts"},
+    {"min_qty": 21, "max_qty": 9999, "price": 11.99, "label": "21+ shirts"},
+]
+
+async def get_pricing_config():
     config = await db.config.find_one({"key": "pricing"})
-    if config:
-        return {
-            "base_price": config.get("base_price", 19.99),
-            "back_print_price": config.get("back_print_price", 2.50),
-            "currency": "GBP",
-            "currency_symbol": "£",
-        }
+    tiers = config.get("tiers", DEFAULT_TIERS) if config else DEFAULT_TIERS
+    back_print_price = config.get("back_print_price", 2.50) if config else 2.50
+    return tiers, back_print_price
+
+def get_tier_price(tiers, quantity):
+    for tier in sorted(tiers, key=lambda t: t["min_qty"]):
+        if tier["min_qty"] <= quantity <= tier["max_qty"]:
+            return tier["price"]
+    return tiers[-1]["price"] if tiers else 17.99
+
+@api_router.get("/pricing")
+async def get_pricing():
+    tiers, back_print_price = await get_pricing_config()
+    lowest = min(t["price"] for t in tiers)
     return {
-        "base_price": 19.99,
-        "back_print_price": 2.50,
+        "tiers": tiers,
+        "back_print_price": back_print_price,
+        "base_price": tiers[0]["price"],  # kept for backwards compat
+        "lowest_price": lowest,
         "currency": "GBP",
         "currency_symbol": "£",
     }
 
 @api_router.patch("/admin/pricing")
 async def update_pricing(data: dict):
-    allowed = {"base_price", "back_print_price"}
-    clean = {k: float(v) for k, v in data.items() if k in allowed}
-    if not clean:
+    update = {}
+    if "back_print_price" in data:
+        update["back_print_price"] = float(data["back_print_price"])
+    if "tiers" in data:
+        update["tiers"] = data["tiers"]
+    if not update:
         raise HTTPException(status_code=400, detail="No valid fields")
     await db.config.update_one(
         {"key": "pricing"},
-        {"$set": {**clean, "key": "pricing"}},
+        {"$set": {**update, "key": "pricing"}},
         upsert=True
     )
-    return {"message": "Pricing updated", **clean}
+    return {"message": "Pricing updated"}
 
 # ── Discount Codes ──────────────────────────────────────────────────────────
 
