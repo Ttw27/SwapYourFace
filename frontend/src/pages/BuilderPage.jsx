@@ -613,10 +613,20 @@ export default function BuilderPage() {
             </button>
           </div>
           <div className="flex gap-4 mt-6 flex-wrap">
-            <button onClick={()=>setBuilderMode('bulk')} className={`flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-colors ${builderMode==='bulk'?'bg-[#FF2E63] text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}><Shirt className="w-5 h-5" /> Bulk Order</button>
-            <button onClick={()=>setBuilderMode('multi')} className={`flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-colors ${builderMode==='multi'?'bg-[#FF2E63] text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}><Users className="w-5 h-5" /> Multi-Design</button>
-            <Link to="/custom-order" className="flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-colors bg-[#252A34] text-white hover:bg-black">
-              <Sparkles className="w-5 h-5" /> Do It For Me
+            <button onClick={()=>setBuilderMode('bulk')}
+              className={`flex flex-col items-start px-5 py-3 rounded-2xl transition-all text-left border-2 ${builderMode==='bulk'?'bg-[#FF2E63]/5 border-[#FF2E63] text-[#FF2E63]':'border-gray-200 text-gray-600 hover:border-gray-300 bg-white'}`}>
+              <div className="flex items-center gap-2 font-bold text-sm"><Shirt className="w-4 h-4" /> Same Design For All</div>
+              <p className="text-xs font-normal mt-0.5 text-gray-400">One face, one design — pick sizes &amp; quantities</p>
+            </button>
+            <button onClick={()=>setBuilderMode('multi')}
+              className={`flex flex-col items-start px-5 py-3 rounded-2xl transition-all text-left border-2 ${builderMode==='multi'?'bg-[#FF2E63]/5 border-[#FF2E63] text-[#FF2E63]':'border-gray-200 text-gray-600 hover:border-gray-300 bg-white'}`}>
+              <div className="flex items-center gap-2 font-bold text-sm"><Users className="w-4 h-4" /> Different Photo Per Person</div>
+              <p className="text-xs font-normal mt-0.5 text-gray-400">Upload a unique face for each group member</p>
+            </button>
+            <Link to="/custom-order"
+              className="flex flex-col items-start px-5 py-3 rounded-2xl transition-all text-left border-2 border-[#252A34] bg-[#252A34] text-white hover:bg-black">
+              <div className="flex items-center gap-2 font-bold text-sm"><Sparkles className="w-4 h-4" /> Do It For Me</div>
+              <p className="text-xs font-normal mt-0.5 text-white/60">Send us your photo — we'll handle everything</p>
             </Link>
           </div>
         </div>
