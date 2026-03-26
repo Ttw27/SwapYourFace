@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useSearchParams, useNavigate } from 'react-router-dom';
+import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Stage, Layer, Image as KonvaImage, Text, Transformer } from 'react-konva';
 import Konva from 'konva';
@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import {
   Upload, RotateCw, ZoomIn, ZoomOut, Move, Trash2,
   Plus, Minus, ShoppingCart, Users, Shirt, ChevronRight,
-  CheckCircle, AlertCircle, Loader2, Type, Info, X
+  CheckCircle, AlertCircle, Loader2, Type, Info, X, Sparkles
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -615,6 +615,9 @@ export default function BuilderPage() {
           <div className="flex gap-4 mt-6 flex-wrap">
             <button onClick={()=>setBuilderMode('bulk')} className={`flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-colors ${builderMode==='bulk'?'bg-[#FF2E63] text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}><Shirt className="w-5 h-5" /> Bulk Order</button>
             <button onClick={()=>setBuilderMode('multi')} className={`flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-colors ${builderMode==='multi'?'bg-[#FF2E63] text-white':'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}><Users className="w-5 h-5" /> Multi-Design</button>
+            <Link to="/custom-order" className="flex items-center gap-2 px-6 py-3 rounded-full font-medium transition-colors bg-[#252A34] text-white hover:bg-black">
+              <Sparkles className="w-5 h-5" /> Do It For Me
+            </Link>
           </div>
         </div>
       </section>
