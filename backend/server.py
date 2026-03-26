@@ -968,6 +968,74 @@ async def get_admin_stats():
         "currency": "GBP"
     }
 
+# ============ CUSTOM ORDER ENQUIRIES ============
+
+@api_router.post("/custom-order")
+async def submit_custom_order(
+    name: str = Form(...),
+    email: str = Form(...),
+    phone: str = Form(...),
+    template: str = Form(''),
+    quantity: str = Form(''),
+    notes: str = Form(''),
+    photo: Optional[UploadFile] = File(None)
+):
+    # Upload photo to Cloudinary if provided
+    photo_url = None
+    if photo and photo.filename:
+        try:
+            contents = await photo.read()
+            if contents:
+                result = cloudinary.uploader.upload(contents, folder="custom_orders", resource_type="image")
+                photo_url = result.get("secure_url")
+        except Exception as e:
+            logger.error(f"Custom order photo upload failed: {e}")
+
+    # Send email notification via Resend
+    if resend.api_key:
+        try:
+            photo_html = f'<p><strong>Photo:</strong> <a href="{photo_url}">View uploaded photo</a></p>' if photo_url else '<p><strong>Photo:</strong> Not uploaded</p>'
+            html = f"""
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+              <div style="background:#252A34;padding:24px;border-radius:12px 12px 0 0;">
+                <h1 style="color:white;margin:0;font-size:22px;">✨ New Custom Order Enquiry</h1>
+                <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;">Swap My Face Tees</p>
+              </div>
+              <div style="background:#f9f9f9;padding:24px;border-radius:0 0 12px 12px;border:1px solid #eee;">
+                <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
+                  <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">👤 Customer Details</h2>
+                  <p style="margin:4px 0;"><strong>Name:</strong> {name}</p>
+                  <p style="margin:4px 0;"><strong>Email:</strong> <a href="mailto:{email}">{email}</a></p>
+                  <p style="margin:4px 0;"><strong>Phone:</strong> <a href="tel:{phone}">{phone}</a></p>
+                </div>
+                <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
+                  <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">🎨 Order Details</h2>
+                  <p style="margin:4px 0;"><strong>Template:</strong> {template or 'Not specified'}</p>
+                  <p style="margin:4px 0;"><strong>Quantity:</strong> {quantity or 'Not specified'}</p>
+                  <p style="margin:4px 0;"><strong>Notes:</strong> {notes or 'None'}</p>
+                  {photo_html}
+                </div>
+                <div style="text-align:center;padding:8px;">
+                  <a href="https://wa.me/447822032847?text=Hi {name}, thanks for your custom order enquiry!"
+                     style="background:#25D366;color:white;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:bold;font-size:14px;display:inline-block;">
+                    Reply on WhatsApp →
+                  </a>
+                </div>
+              </div>
+            </div>"""
+
+            resend.Emails.send({
+                "from": "Swap My Face Tees <orders@swapmyface.co.uk>",
+                "to": ["support@swapmyface.co.uk"],
+                "reply_to": email,
+                "subject": f"✨ Custom Order Enquiry from {name}",
+                "html": html,
+            })
+        except Exception as e:
+            logger.error(f"Failed to send custom order email: {e}")
+
+    return {"message": "Enquiry received"}
+
 # ============ REVIEWS ============
 
 @api_router.get("/reviews")
