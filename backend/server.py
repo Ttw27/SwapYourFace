@@ -21,6 +21,7 @@ import shutil
 import stripe
 import cloudinary
 import cloudinary.uploader
+import resend
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -32,6 +33,7 @@ db = client[os.environ['DB_NAME']]
 
 # Stripe
 stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
+resend.api_key = os.environ.get('RESEND_API_KEY', '')
 
 # Cloudinary — for storing preview PNGs permanently
 cloudinary.config(
@@ -627,6 +629,84 @@ async def create_checkout_session(data: dict):
         logger.error(f"Stripe checkout error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
+# ============ EMAIL NOTIFICATIONS ============
+
+async def send_order_notification(order: dict):
+    """Send new order notification email via Resend"""
+    if not resend.api_key:
+        logger.warning("RESEND_API_KEY not set — skipping email notification")
+        return
+    try:
+        items = order.get("items", [])
+        item_rows = ""
+        for i, item in enumerate(items):
+            back = f" + back name: {item.get('backName','')}" if item.get('hasBackPrint') else ""
+            item_rows += f"""
+            <tr style="border-bottom:1px solid #eee;">
+              <td style="padding:8px 12px;">{i+1}</td>
+              <td style="padding:8px 12px;">{item.get('templateName','')}</td>
+              <td style="padding:8px 12px;">{item.get('shirtType','').capitalize()} {item.get('size','')}</td>
+              <td style="padding:8px 12px;">{item.get('titleText','')} {item.get('subtitleText','')}</td>
+              <td style="padding:8px 12px;">£{(item.get('price', 0) + (item.get('backPrice',0) if item.get('hasBackPrint') else 0)):.2f}{back}</td>
+            </tr>"""
+
+        html = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+          <div style="background:#FF2E63;padding:24px;border-radius:12px 12px 0 0;">
+            <h1 style="color:white;margin:0;font-size:24px;">🎉 New Order Received!</h1>
+            <p style="color:rgba(255,255,255,0.9);margin:4px 0 0;">Swap My Face Tees</p>
+          </div>
+          <div style="background:#f9f9f9;padding:24px;border-radius:0 0 12px 12px;border:1px solid #eee;">
+
+            <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
+              <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">📋 Order Details</h2>
+              <p style="margin:4px 0;"><strong>Order:</strong> {order.get('order_number','')}</p>
+              <p style="margin:4px 0;"><strong>Total:</strong> £{order.get('total_amount',0):.2f}</p>
+              <p style="margin:4px 0;"><strong>Date:</strong> {order.get('created_at','')[:19].replace('T',' ')}</p>
+            </div>
+
+            <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
+              <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">👤 Customer</h2>
+              <p style="margin:4px 0;"><strong>Name:</strong> {order.get('customer_name','')}</p>
+              <p style="margin:4px 0;"><strong>Email:</strong> <a href="mailto:{order.get('customer_email','')}">{order.get('customer_email','')}</a></p>
+              <p style="margin:4px 0;"><strong>Phone:</strong> <a href="tel:{order.get('customer_phone','')}">{order.get('customer_phone','')}</a></p>
+            </div>
+
+            <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
+              <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">👕 Items ({len(items)} shirt{'s' if len(items)!=1 else ''})</h2>
+              <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                <thead>
+                  <tr style="background:#f5f5f5;">
+                    <th style="padding:8px 12px;text-align:left;">#</th>
+                    <th style="padding:8px 12px;text-align:left;">Template</th>
+                    <th style="padding:8px 12px;text-align:left;">Size</th>
+                    <th style="padding:8px 12px;text-align:left;">Text</th>
+                    <th style="padding:8px 12px;text-align:left;">Price</th>
+                  </tr>
+                </thead>
+                <tbody>{item_rows}</tbody>
+              </table>
+            </div>
+
+            <div style="text-align:center;padding:16px;">
+              <a href="https://www.swapmyface.co.uk/admin" 
+                 style="background:#FF2E63;color:white;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:bold;font-size:14px;display:inline-block;">
+                View in Admin Panel →
+              </a>
+            </div>
+          </div>
+        </div>"""
+
+        resend.Emails.send({
+            "from": "Swap My Face Tees <orders@swapmyface.co.uk>",
+            "to": ["support@swapmyface.co.uk"],
+            "subject": f"🎉 New Order #{order.get('order_number','')} — £{order.get('total_amount',0):.2f}",
+            "html": html,
+        })
+        logger.info(f"Order notification email sent for {order.get('order_number','')}")
+    except Exception as e:
+        logger.error(f"Failed to send order notification: {e}")
+
 # ============ CART & ORDERS ============
 
 @api_router.post("/orders")
@@ -653,6 +733,14 @@ async def create_order(order_data: OrderCreate):
     doc = order.model_dump()
     doc['created_at'] = doc['created_at'].isoformat()
     await db.orders.insert_one(doc)
+
+    # Send email notification in background (don't block the response)
+    try:
+        import asyncio
+        asyncio.create_task(send_order_notification(order))
+    except Exception as e:
+        logger.error(f"Could not schedule email notification: {e}")
+
     return order
 
 @api_router.get("/orders")
