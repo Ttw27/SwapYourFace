@@ -14,7 +14,7 @@ export default function CustomOrderPage() {
   const [form, setForm] = useState({ name:'', email:'', phone:'', template:'', notes:'', quantity:'' });
   const [photo, setPhoto] = useState(null);
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState(''); // 'whatsapp' | 'email' | ''
   const setF = (k,v) => setForm(f=>({...f,[k]:v}));
 
   const buildMessage = () => `Hi! I'd like a custom order 👋
@@ -32,7 +32,7 @@ ${photo ? '\nI have a photo ready to send!' : ''}`;
       toast.error('Please enter your name and phone number'); return;
     }
     window.open(`${WHATSAPP}?text=${encodeURIComponent(buildMessage())}`, '_blank');
-    setSubmitted(true);
+    setSubmitted('whatsapp');
   };
 
   const handleEmail = async () => {
@@ -49,7 +49,7 @@ ${photo ? '\nI have a photo ready to send!' : ''}`;
         body: fd,
       });
       if (!res.ok) throw new Error('Failed to send');
-      setSubmitted(true);
+      setSubmitted('email');
     } catch(e) {
       toast.error('Failed to send — please try WhatsApp instead');
     } finally {
@@ -57,15 +57,21 @@ ${photo ? '\nI have a photo ready to send!' : ''}`;
     }
   };
 
-  if (submitted) {
+  if (submitted === 'whatsapp' || submitted === 'email') {
     return (
       <div className="min-h-screen bg-[#F7F7F7] flex items-center justify-center p-6">
         <div className="bg-white rounded-2xl shadow-sm p-8 max-w-md w-full text-center">
           <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <CheckCircle className="w-8 h-8 text-green-600" />
           </div>
-          <h2 className="font-['Anton'] text-2xl text-[#252A34] mb-2 tracking-wide">WHATSAPP OPENED!</h2>
-          <p className="text-gray-500 mb-6">We've pre-filled a message with your details. Just send it and attach your photo — we'll get back to you as soon as possible!</p>
+          <h2 className="font-['Anton'] text-2xl text-[#252A34] mb-2 tracking-wide">
+            {submitted === 'email' ? 'ENQUIRY SENT!' : 'WHATSAPP OPENED!'}
+          </h2>
+          <p className="text-gray-500 mb-6">
+            {submitted === 'email'
+              ? "Thanks! We've received your enquiry and will be in touch as soon as possible."
+              : "We've pre-filled a message with your details. Just send it and attach your photo — we'll get back to you as soon as possible!"}
+          </p>
           <div className="space-y-3">
             <Link to="/">
               <Button className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-4 font-bold uppercase tracking-wider">Back to Home</Button>
