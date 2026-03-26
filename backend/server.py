@@ -714,12 +714,11 @@ async def download_order_files(order_id: str):
 
 # ============ PRICING ============
 
-@api_router.get("/pricing")
 DEFAULT_TIERS = [
-    {"min_qty": 1,  "max_qty": 1,  "price": 17.99, "label": "1 shirt"},
-    {"min_qty": 2,  "max_qty": 6,  "price": 15.99, "label": "2–6 shirts"},
-    {"min_qty": 7,  "max_qty": 12, "price": 13.99, "label": "7–12 shirts"},
-    {"min_qty": 13, "max_qty": 20, "price": 12.99, "label": "13–20 shirts"},
+    {"min_qty": 1,  "max_qty": 1,    "price": 17.99, "label": "1 shirt"},
+    {"min_qty": 2,  "max_qty": 6,    "price": 15.99, "label": "2–6 shirts"},
+    {"min_qty": 7,  "max_qty": 12,   "price": 13.99, "label": "7–12 shirts"},
+    {"min_qty": 13, "max_qty": 20,   "price": 12.99, "label": "13–20 shirts"},
     {"min_qty": 21, "max_qty": 9999, "price": 11.99, "label": "21+ shirts"},
 ]
 
@@ -742,7 +741,7 @@ async def get_pricing():
     return {
         "tiers": tiers,
         "back_print_price": back_print_price,
-        "base_price": tiers[0]["price"],  # kept for backwards compat
+        "base_price": tiers[0]["price"],
         "lowest_price": lowest,
         "currency": "GBP",
         "currency_symbol": "£",
