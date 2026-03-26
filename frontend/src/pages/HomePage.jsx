@@ -238,22 +238,8 @@ export default function HomePage() {
               ))}
             </div>
           ) : (
-            <div className="grid sm:grid-cols-3 gap-6 mb-8">
-              {[
-                { name:'Sarah M.', event:'Hen Party', text:'Absolutely hilarious! The whole hen party were in stitches when they saw the shirts.', rating:5 },
-                { name:'James T.', event:'Stag Do', text:'Ordered 12 shirts for my stag do in Benidorm. Dead easy process and the lads loved them.', rating:5 },
-                { name:'Emma K.', event:'Hen Party', text:'Made our hen do extra special. Everyone wanted to know where we got them from!', rating:5 },
-              ].map((r,i) => (
-                <motion.div key={i} initial={{ opacity:0, y:20 }} whileInView={{ opacity:1, y:0 }} viewport={{ once:true }} transition={{ delay:i*0.1 }}
-                  className="bg-[#F7F7F7] rounded-2xl p-5">
-                  <div className="flex gap-0.5 mb-2">
-                    {[1,2,3,4,5].map(i=><Star key={i} className="w-4 h-4 fill-[#FFE600] text-[#FFE600]"/>)}
-                  </div>
-                  <p className="text-gray-600 text-sm leading-relaxed mb-3">"{r.text}"</p>
-                  <p className="font-bold text-[#252A34] text-sm">{r.name}</p>
-                  <p className="text-xs text-gray-400">{r.event}</p>
-                </motion.div>
-              ))}
+            <div className="text-center py-8 text-gray-400 mb-8">
+              <p>Reviews loading...</p>
             </div>
           )}
 
