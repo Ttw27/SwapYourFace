@@ -62,7 +62,17 @@ export default function GalleryPage() {
       </section>
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12 py-10">
-        {templatesLoading ? (
+        {/* Skin tone note */}
+      <div className="mb-6 p-4 bg-[#FFF9E6] border border-[#FFE600] rounded-xl flex items-start gap-3">
+        <span className="text-lg flex-shrink-0">🎨</span>
+        <p className="text-sm text-gray-600">
+          Our templates are stylised illustrations — if you'd like a template that better suits your group's skin tones, head to our{' '}
+          <a href="/custom-order" className="text-[#FF2E63] font-medium hover:underline">Custom Order service</a>{' '}
+          and we'll create something just for you.
+        </p>
+      </div>
+
+      {templatesLoading ? (
           <div className="text-center py-20 text-gray-400">Loading templates...</div>
         ) : filteredTemplates.length === 0 ? (
           <div className="text-center py-20 text-gray-400">No templates found</div>

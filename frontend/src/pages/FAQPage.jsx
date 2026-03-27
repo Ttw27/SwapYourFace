@@ -23,6 +23,7 @@ const faqs = [
       { q: "What if my photo doesn't cut out properly?", a: "Don't worry — every order is manually checked by our team before printing. If your photo doesn't cut out cleanly we'll fix it, or contact you if we need a better quality photo." },
       { q: "Can I request a custom template?", a: "Absolutely! If you don't see a template you love, tell us your idea via our Custom Order page or WhatsApp and we'll create a bespoke template for you." },
       { q: "Can I add text to the back of the shirt?", a: "Yes — you can add a name to the back of each shirt for £2.50 per shirt. Great for adding names or numbers for a squad feel." },
+      { q: "Do your templates support different skin tones?", a: "Our templates are stylised illustrations currently shown in one style. The face cutout uses your actual photo so your skin tone is always accurate. If you'd like a template body that better suits your group, get in touch via our Custom Order service — we can create bespoke artwork tailored to you." },
     ]
   },
   {

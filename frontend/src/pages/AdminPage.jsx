@@ -54,6 +54,8 @@ export default function AdminPage() {
   const [savingPricing, setSavingPricing] = useState(false);
   const [discountCodes, setDiscountCodes] = useState([]);
   const [newCode, setNewCode] = useState({ code: '', percent_off: 10 });
+  const [trackingConfig, setTrackingConfig] = useState({ google_tag_id: '', facebook_pixel_id: '', facebook_access_token: '' });
+  const [savingTracking, setSavingTracking] = useState(false);
   const [savingCode, setSavingCode] = useState(false);
   const [reviewForm, setReviewForm] = useState({ name:'', location:'', event:'', rating:5, text:'', verified:true });
   const [reviewPhoto, setReviewPhoto] = useState(null);
@@ -66,7 +68,7 @@ export default function AdminPage() {
   const [savingTemplate, setSavingTemplate] = useState(false);
 
   useEffect(() => {
-    if (authed) { fetchStats(); fetchOrders(); fetchTemplates(); fetchReviews(); fetchPricing(); fetchDiscountCodes(); }
+    if (authed) { fetchStats(); fetchOrders(); fetchTemplates(); fetchReviews(); fetchPricing(); fetchDiscountCodes(); fetchTrackingConfig(); }
   }, [authed]);
 
   const handleLogin = () => {
@@ -212,6 +214,27 @@ export default function AdminPage() {
       body: JSON.stringify({ active: !active })
     });
     fetchDiscountCodes();
+  };
+
+  const fetchTrackingConfig = async () => {
+    try {
+      const r = await fetch(`${API}/admin/tracking-config`);
+      if (r.ok) setTrackingConfig(await r.json());
+    } catch(e) {}
+  };
+
+  const handleSaveTracking = async () => {
+    setSavingTracking(true);
+    try {
+      const r = await fetch(`${API}/admin/tracking-config`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(trackingConfig)
+      });
+      if (!r.ok) throw new Error();
+      toast.success('Tracking config saved!');
+    } catch(e) { toast.error('Failed to save tracking config'); }
+    finally { setSavingTracking(false); }
   };
 
   const updateStatus = async (orderId, status) => {
@@ -699,6 +722,69 @@ export default function AdminPage() {
 
               <Button onClick={handleSavePricing} disabled={savingPricing} className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-8 py-3 font-bold uppercase tracking-wider">
                 {savingPricing ? 'Saving...' : 'Save Pricing'}
+              </Button>
+            </div>
+
+            {/* Tracking & Pixels */}
+            <div className="bg-white rounded-2xl shadow-sm p-6 space-y-5">
+              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">TRACKING & PIXELS</h2>
+              <p className="text-sm text-gray-500">Add your pixel IDs here — leave blank to disable. Scripts load automatically when IDs are saved.</p>
+
+              <div className="space-y-4">
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-500 inline-block"></span>
+                    Google Tag ID
+                  </Label>
+                  <Input
+                    value={trackingConfig.google_tag_id}
+                    onChange={e => setTrackingConfig(t => ({...t, google_tag_id: e.target.value}))}
+                    placeholder="e.g. G-XXXXXXXXXX or AW-XXXXXXXXX"
+                    className="mt-1 font-mono text-sm"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Found in Google Ads → Tools → Conversions, or Google Analytics → Admin → Data Streams</p>
+                </div>
+
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-600 inline-block"></span>
+                    Facebook Pixel ID
+                  </Label>
+                  <Input
+                    value={trackingConfig.facebook_pixel_id}
+                    onChange={e => setTrackingConfig(t => ({...t, facebook_pixel_id: e.target.value}))}
+                    placeholder="e.g. 1234567890123456"
+                    className="mt-1 font-mono text-sm"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Found in Facebook Business Manager → Events Manager → Your Pixel</p>
+                </div>
+
+                <div>
+                  <Label className="flex items-center gap-2">
+                    <span className="w-2 h-2 rounded-full bg-blue-600 inline-block"></span>
+                    Facebook Conversions API Token
+                    <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">Server-side</span>
+                  </Label>
+                  <Input
+                    type="password"
+                    value={trackingConfig.facebook_access_token}
+                    onChange={e => setTrackingConfig(t => ({...t, facebook_access_token: e.target.value}))}
+                    placeholder="Your Conversions API access token"
+                    className="mt-1 font-mono text-sm"
+                  />
+                  <p className="text-xs text-gray-400 mt-1">Found in Events Manager → Settings → Conversions API → Generate Access Token. Enables server-side purchase tracking that bypasses ad blockers.</p>
+                </div>
+              </div>
+
+              <div className="p-4 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-700 space-y-1">
+                <p className="font-bold">What gets tracked automatically:</p>
+                <p>• Google — page views on every page</p>
+                <p>• Facebook Pixel — page views + Purchase event on order completion</p>
+                <p>• Facebook Conversions API — Purchase event sent server-side when order is placed (most accurate)</p>
+              </div>
+
+              <Button onClick={handleSaveTracking} disabled={savingTracking} className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-8 py-3 font-bold uppercase tracking-wider">
+                {savingTracking ? 'Saving...' : 'Save Tracking Config'}
               </Button>
             </div>
 
