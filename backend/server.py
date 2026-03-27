@@ -738,8 +738,9 @@ async def create_order(order_data: OrderCreate):
     try:
         import asyncio
         asyncio.create_task(send_order_notification(order))
+        asyncio.create_task(send_facebook_purchase_event(order))
     except Exception as e:
-        logger.error(f"Could not schedule email notification: {e}")
+        logger.error(f"Could not schedule notifications: {e}")
 
     return order
 
@@ -948,6 +949,90 @@ async def validate_discount(data: dict):
     if not doc.get("active", True):
         raise HTTPException(status_code=400, detail="This code is no longer active")
     return {"code": code, "percent_off": doc["percent_off"], "valid": True}
+
+# ============ TRACKING & PIXELS ============
+
+@api_router.get("/tracking-config")
+async def get_tracking_config():
+    """Public endpoint — returns active pixel IDs for frontend to load"""
+    config = await db.config.find_one({"key": "tracking"})
+    if not config:
+        return {"google_tag_id": "", "facebook_pixel_id": ""}
+    return {
+        "google_tag_id": config.get("google_tag_id", ""),
+        "facebook_pixel_id": config.get("facebook_pixel_id", ""),
+    }
+
+@api_router.get("/admin/tracking-config")
+async def get_tracking_config_admin():
+    """Admin endpoint — returns all tracking settings including secret tokens"""
+    config = await db.config.find_one({"key": "tracking"})
+    if not config:
+        return {"google_tag_id": "", "facebook_pixel_id": "", "facebook_access_token": ""}
+    return {
+        "google_tag_id": config.get("google_tag_id", ""),
+        "facebook_pixel_id": config.get("facebook_pixel_id", ""),
+        "facebook_access_token": config.get("facebook_access_token", ""),
+    }
+
+@api_router.patch("/admin/tracking-config")
+async def update_tracking_config(data: dict):
+    allowed = {"google_tag_id", "facebook_pixel_id", "facebook_access_token"}
+    clean = {k: v for k, v in data.items() if k in allowed}
+    if not clean:
+        raise HTTPException(status_code=400, detail="No valid fields")
+    await db.config.update_one(
+        {"key": "tracking"},
+        {"$set": {**clean, "key": "tracking"}},
+        upsert=True
+    )
+    return {"message": "Tracking config updated"}
+
+async def send_facebook_purchase_event(order: dict):
+    """Send purchase event to Facebook Conversions API"""
+    config = await db.config.find_one({"key": "tracking"})
+    if not config:
+        return
+    pixel_id = config.get("facebook_pixel_id", "")
+    access_token = config.get("facebook_access_token", "")
+    if not pixel_id or not access_token:
+        return
+    try:
+        import hashlib
+        def hash_val(val):
+            return hashlib.sha256(val.strip().lower().encode()).hexdigest() if val else None
+
+        email = order.get("customer_email", "")
+        phone = order.get("customer_phone", "").replace(" ", "").replace("+", "")
+        total = order.get("total_amount", 0)
+
+        payload = {
+            "data": [{
+                "event_name": "Purchase",
+                "event_time": int(datetime.now(timezone.utc).timestamp()),
+                "event_id": order.get("id", ""),
+                "action_source": "website",
+                "user_data": {
+                    "em": [hash_val(email)] if email else [],
+                    "ph": [hash_val(phone)] if phone else [],
+                    "country": [hash_val("gb")],
+                },
+                "custom_data": {
+                    "currency": "GBP",
+                    "value": float(total),
+                    "order_id": order.get("order_number", ""),
+                    "num_items": len(order.get("items", [])),
+                },
+            }]
+        }
+        url = f"https://graph.facebook.com/v18.0/{pixel_id}/events?access_token={access_token}"
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code == 200:
+            logger.info(f"Facebook Purchase event sent for order {order.get('order_number','')}")
+        else:
+            logger.error(f"Facebook API error: {resp.text}")
+    except Exception as e:
+        logger.error(f"Failed to send Facebook Purchase event: {e}")
 
 # ============ ADMIN STATS ============
 
