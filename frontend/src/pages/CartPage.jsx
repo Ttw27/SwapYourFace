@@ -39,7 +39,23 @@ export default function CartPage() {
 
   // Handle return from Stripe
   useEffect(() => {
-    if (searchParams.get('session_id')) {
+    const sessionId = searchParams.get('session_id');
+    if (sessionId) {
+      // Fire browser-side Purchase event for Facebook Pixel
+      // Server-side already fired via Conversions API when order was placed
+      // Meta deduplicates using the session_id as event_id
+      try {
+        if (window.fbq) {
+          window.fbq('track', 'Purchase', {
+            value: parseFloat(sessionStorage.getItem('smf_order_total') || 0),
+            currency: 'GBP',
+            content_type: 'product',
+          }, {
+            eventID: sessionId, // used for deduplication with server-side event
+          });
+        }
+      } catch(e) {}
+      sessionStorage.removeItem('smf_order_total');
       clearCart();
       setStep('success');
     }
@@ -132,7 +148,8 @@ export default function CartPage() {
       if (!checkoutRes.ok) throw new Error('Failed to create checkout session');
       const { checkout_url } = await checkoutRes.json();
 
-      // 3. Redirect to Stripe
+      // 3. Store total for post-payment tracking, then redirect to Stripe
+      sessionStorage.setItem('smf_order_total', total.toFixed(2));
       window.location.href = checkout_url;
 
     } catch (err) {
