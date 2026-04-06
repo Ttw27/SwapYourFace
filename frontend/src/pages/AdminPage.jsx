@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import {
   ShoppingBag, Download, RefreshCw, LogOut,
   CheckCircle, Clock, Truck, Package, Eye, X,
-  Plus, Shirt, Trash2, Edit2, Star, Upload
+  Plus, Shirt, Trash2, Edit2, Star, Upload, CreditCard, Sparkles, Copy, ExternalLink
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -237,6 +237,50 @@ export default function AdminPage() {
     finally { setSavingTracking(false); }
   };
 
+  // Payment Links
+  const [paymentLinkForm, setPaymentLinkForm] = useState({
+    customer_name: '', customer_email: '', customer_phone: '',
+    description: '', amount: '', send_email: true
+  });
+  const [generatedLink, setGeneratedLink] = useState('');
+  const [generatingLink, setGeneratingLink] = useState(false);
+  const [paymentLinks, setPaymentLinks] = useState([]);
+
+  const handleGeneratePaymentLink = async () => {
+    if (!paymentLinkForm.customer_name.trim() || !paymentLinkForm.customer_email.trim() || !paymentLinkForm.amount) {
+      toast.error('Please enter customer name, email and amount'); return;
+    }
+    if (parseFloat(paymentLinkForm.amount) <= 0) {
+      toast.error('Please enter a valid amount'); return;
+    }
+    setGeneratingLink(true);
+    try {
+      const r = await fetch(`${API}/admin/payment-links`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...paymentLinkForm,
+          amount: parseFloat(paymentLinkForm.amount)
+        })
+      });
+      if (!r.ok) throw new Error('Failed to generate link');
+      const data = await r.json();
+      setGeneratedLink(data.checkout_url);
+      setPaymentLinks(prev => [data, ...prev]);
+      toast.success('Payment link generated!');
+      if (paymentLinkForm.send_email) toast.success('Email sent to customer!');
+    } catch(e) {
+      toast.error(e.message || 'Failed to generate payment link');
+    } finally {
+      setGeneratingLink(false);
+    }
+  };
+
+  const copyToClipboard = (text) => {
+    navigator.clipboard.writeText(text);
+    toast.success('Link copied to clipboard!');
+  };
+
   const updateStatus = async (orderId, status) => {
     try {
       await fetch(`${API}/orders/${orderId}/status?status=${status}`, { method: 'PATCH' });
@@ -351,7 +395,7 @@ export default function AdminPage() {
 
         {/* Tabs */}
         <div className="flex gap-2 border-b border-gray-200">
-          {[{id:'orders',label:'Orders',icon:ShoppingBag},{id:'templates',label:'Templates',icon:Shirt},{id:'reviews',label:'Reviews',icon:Star},{id:'settings',label:'Settings',icon:Edit2}].map(tab => (
+          {[{id:'orders',label:'Orders',icon:ShoppingBag},{id:'templates',label:'Templates',icon:Shirt},{id:'reviews',label:'Reviews',icon:Star},{id:'settings',label:'Settings',icon:Edit2},{id:'payment-links',label:'Payment Links',icon:CreditCard},{id:'builder',label:'Builder',icon:Sparkles}].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-5 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab===tab.id?'border-[#FF2E63] text-[#FF2E63]':'border-transparent text-gray-500 hover:text-gray-700'}`}>
               <tab.icon className="w-4 h-4" />{tab.label}
@@ -847,6 +891,151 @@ export default function AdminPage() {
                     </div>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Payment Links Tab ── */}
+        {activeTab === 'payment-links' && (
+          <div className="space-y-6">
+            <div className="bg-white rounded-2xl shadow-sm p-6 space-y-5">
+              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">GENERATE PAYMENT LINK</h2>
+              <p className="text-sm text-gray-500">Create a Stripe payment link for custom WhatsApp orders. Send via email or copy the link to share on WhatsApp.</p>
+
+              <div className="grid sm:grid-cols-2 gap-4">
+                <div>
+                  <Label>Customer Name <span className="text-[#FF2E63]">*</span></Label>
+                  <Input value={paymentLinkForm.customer_name}
+                    onChange={e => setPaymentLinkForm(f => ({...f, customer_name: e.target.value}))}
+                    placeholder="e.g. John Smith" className="mt-1" />
+                </div>
+                <div>
+                  <Label>Customer Email <span className="text-[#FF2E63]">*</span></Label>
+                  <Input type="email" value={paymentLinkForm.customer_email}
+                    onChange={e => setPaymentLinkForm(f => ({...f, customer_email: e.target.value}))}
+                    placeholder="customer@email.com" className="mt-1" />
+                </div>
+                <div>
+                  <Label>Customer Phone</Label>
+                  <Input type="tel" value={paymentLinkForm.customer_phone}
+                    onChange={e => setPaymentLinkForm(f => ({...f, customer_phone: e.target.value}))}
+                    placeholder="07911 123456" className="mt-1" />
+                </div>
+                <div>
+                  <Label>Amount (£) <span className="text-[#FF2E63]">*</span></Label>
+                  <div className="relative mt-1">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 font-medium">£</span>
+                    <Input type="number" step="0.01" min="0"
+                      value={paymentLinkForm.amount}
+                      onChange={e => setPaymentLinkForm(f => ({...f, amount: e.target.value}))}
+                      placeholder="0.00" className="pl-7" />
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <Label>Order Description</Label>
+                <Textarea value={paymentLinkForm.description}
+                  onChange={e => setPaymentLinkForm(f => ({...f, description: e.target.value}))}
+                  placeholder="e.g. Custom stag do order — 8 shirts, Hip Hop King template, back names included"
+                  rows={3} className="mt-1" />
+                <p className="text-xs text-gray-400 mt-1">This description is shown to the customer on the payment page and in their email</p>
+              </div>
+
+              <label className="flex items-center gap-3 cursor-pointer p-3 bg-gray-50 rounded-xl">
+                <input type="checkbox" checked={paymentLinkForm.send_email}
+                  onChange={e => setPaymentLinkForm(f => ({...f, send_email: e.target.checked}))}
+                  className="rounded" />
+                <div>
+                  <p className="text-sm font-medium text-gray-700">Send payment link by email automatically</p>
+                  <p className="text-xs text-gray-400">Customer receives an email with their order details and a Pay Now button</p>
+                </div>
+              </label>
+
+              <Button onClick={handleGeneratePaymentLink} disabled={generatingLink}
+                className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-4 font-bold uppercase tracking-wider gap-2">
+                <CreditCard className="w-5 h-5" />
+                {generatingLink ? 'Generating...' : 'Generate Payment Link'}
+              </Button>
+
+              {/* Generated link */}
+              {generatedLink && (
+                <div className="p-4 bg-green-50 border border-green-200 rounded-xl space-y-3">
+                  <p className="text-sm font-bold text-green-800">✅ Payment link generated!</p>
+                  <div className="flex gap-2">
+                    <input readOnly value={generatedLink}
+                      className="flex-1 text-xs bg-white border border-green-200 rounded-lg px-3 py-2 font-mono text-gray-600 truncate" />
+                    <Button onClick={() => copyToClipboard(generatedLink)}
+                      className="bg-[#252A34] hover:bg-black text-white rounded-lg px-4 gap-2 flex-shrink-0">
+                      <Copy className="w-4 h-4" /> Copy
+                    </Button>
+                    <a href={generatedLink} target="_blank" rel="noreferrer">
+                      <Button variant="outline" className="rounded-lg px-3">
+                        <ExternalLink className="w-4 h-4" />
+                      </Button>
+                    </a>
+                  </div>
+                  <p className="text-xs text-green-700">Copy and paste this link into WhatsApp, SMS or any message to the customer</p>
+                </div>
+              )}
+            </div>
+
+            {/* Recent payment links */}
+            {paymentLinks.length > 0 && (
+              <div className="bg-white rounded-2xl shadow-sm p-6 space-y-4">
+                <h3 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">RECENT LINKS THIS SESSION</h3>
+                <div className="space-y-3">
+                  {paymentLinks.map((link, i) => (
+                    <div key={i} className="flex items-center justify-between p-3 bg-gray-50 rounded-xl gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium text-gray-800 text-sm">{link.customer_name}</p>
+                        <p className="text-xs text-gray-500 truncate">{link.description}</p>
+                        <p className="text-sm font-bold text-[#FF2E63]">£{link.amount?.toFixed(2)}</p>
+                      </div>
+                      <div className="flex gap-2 flex-shrink-0">
+                        <Button onClick={() => copyToClipboard(link.checkout_url)} className="bg-[#252A34] text-white rounded-lg px-3 py-2 text-xs gap-1">
+                          <Copy className="w-3 h-3" /> Copy
+                        </Button>
+                        <a href={`https://wa.me/${link.customer_phone?.replace(/\D/g,'').replace(/^0/,'44')}?text=${encodeURIComponent(`Hi ${link.customer_name}! Here's your payment link for your custom order: ${link.checkout_url}`)}`}
+                          target="_blank" rel="noreferrer">
+                          <Button className="bg-[#25D366] text-white rounded-lg px-3 py-2 text-xs">WhatsApp</Button>
+                        </a>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Admin Builder Tab ── */}
+        {activeTab === 'builder' && (
+          <div className="space-y-4">
+            <div className="bg-white rounded-2xl shadow-sm p-6">
+              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide mb-2">STAFF BUILDER</h2>
+              <p className="text-sm text-gray-500 mb-4">Create custom orders for customers. Works exactly like the customer builder — templates update automatically as you add new ones.</p>
+              <div className="p-4 bg-[#FFF9E6] border border-[#FFE600] rounded-xl text-sm text-gray-600 mb-4">
+                <p className="font-bold text-[#1C1C1C] mb-1">How to use:</p>
+                <ol className="list-decimal pl-4 space-y-1">
+                  <li>Enter the customer name below for reference</li>
+                  <li>Click "Open Builder" — the full builder opens in a new tab</li>
+                  <li>Create the design as normal</li>
+                  <li>At the sizes step, add to cart</li>
+                  <li>The order saves in your Orders tab tagged as a staff order</li>
+                  <li>Download the files from the Orders tab as normal</li>
+                </ol>
+              </div>
+              <div className="flex gap-3">
+                <Input placeholder="Customer name (for reference)" className="flex-1"
+                  id="staff-customer-name" />
+                <Button onClick={() => {
+                  const name = document.getElementById('staff-customer-name')?.value || 'Staff Order';
+                  window.open(`/builder?staff=true&customer=${encodeURIComponent(name)}`, '_blank');
+                }} className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-6 font-bold gap-2 flex-shrink-0">
+                  <Sparkles className="w-4 h-4" /> Open Builder
+                </Button>
               </div>
             </div>
           </div>
