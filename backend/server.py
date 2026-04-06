@@ -1034,6 +1034,116 @@ async def send_facebook_purchase_event(order: dict):
     except Exception as e:
         logger.error(f"Failed to send Facebook Purchase event: {e}")
 
+# ============ ADMIN PAYMENT LINKS ============
+
+@api_router.post("/admin/payment-links")
+async def create_payment_link(data: dict):
+    """Generate a Stripe checkout link for a custom WhatsApp order"""
+    if not stripe.api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+
+    customer_name = data.get("customer_name", "")
+    customer_email = data.get("customer_email", "")
+    customer_phone = data.get("customer_phone", "")
+    description = data.get("description", "Custom Order")
+    amount = float(data.get("amount", 0))
+    send_email = data.get("send_email", True)
+
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Invalid amount")
+
+    # Create order in DB
+    order_number = f"PT-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+    order = {
+        "id": str(uuid.uuid4()),
+        "order_number": order_number,
+        "customer_name": customer_name,
+        "customer_email": customer_email,
+        "customer_phone": customer_phone,
+        "items": [{"templateName": description, "price": amount, "quantity": 1, "size": "Custom"}],
+        "total_amount": amount,
+        "status": "pending_payment",
+        "order_type": "custom_payment_link",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "gdpr_consent": True,
+    }
+    await db.orders.insert_one(order)
+
+    # Create Stripe checkout session
+    try:
+        session = stripe.checkout.Session.create(
+            payment_method_types=["card"],
+            line_items=[{
+                "price_data": {
+                    "currency": "gbp",
+                    "product_data": {
+                        "name": "Custom T-Shirt Order — Swap My Face Tees",
+                        "description": description,
+                    },
+                    "unit_amount": int(amount * 100),
+                },
+                "quantity": 1,
+            }],
+            mode="payment",
+            customer_email=customer_email or None,
+            success_url=f"{os.environ.get('FRONTEND_URL', 'https://www.swapmyface.co.uk')}/cart?session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{os.environ.get('FRONTEND_URL', 'https://www.swapmyface.co.uk')}/cart",
+            metadata={"order_id": order["id"], "order_type": "custom_payment_link"},
+        )
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Send payment link email if requested
+    if send_email and resend.api_key and customer_email:
+        try:
+            html = f"""
+            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+              <div style="background:#252A34;padding:24px;border-radius:12px 12px 0 0;">
+                <h1 style="color:white;margin:0;font-size:22px;">Your Payment Link</h1>
+                <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;">Swap My Face Tees</p>
+              </div>
+              <div style="background:#f9f9f9;padding:24px;border-radius:0 0 12px 12px;border:1px solid #eee;">
+                <p style="color:#252A34;">Hi {customer_name},</p>
+                <p style="color:#555;">Thanks for your custom order! Here are your order details and payment link:</p>
+
+                <div style="background:white;border-radius:8px;padding:16px;margin:16px 0;border:1px solid #eee;">
+                  <p style="margin:4px 0;"><strong>Order:</strong> {order_number}</p>
+                  <p style="margin:4px 0;"><strong>Description:</strong> {description}</p>
+                  <p style="margin:4px 0;"><strong>Total:</strong> £{amount:.2f}</p>
+                </div>
+
+                <p style="color:#555;font-size:14px;">Once payment is received we'll create your digital proof and send it for your approval before anything is printed.</p>
+
+                <div style="text-align:center;padding:24px 0;">
+                  <a href="{session.url}"
+                     style="background:#FF2E63;color:white;padding:16px 40px;border-radius:50px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;">
+                    Pay Now — £{amount:.2f}
+                  </a>
+                </div>
+
+                <p style="color:#999;font-size:12px;text-align:center;">Secure payment powered by Stripe. Questions? WhatsApp us on +44 7822 032847</p>
+              </div>
+            </div>"""
+
+            resend.Emails.send({
+                "from": "Swap My Face Tees <orders@swapmyface.co.uk>",
+                "to": [customer_email],
+                "subject": f"Your Custom Order Payment Link — £{amount:.2f}",
+                "html": html,
+            })
+        except Exception as e:
+            logger.error(f"Failed to send payment link email: {e}")
+
+    return {
+        "checkout_url": session.url,
+        "order_number": order_number,
+        "customer_name": customer_name,
+        "customer_email": customer_email,
+        "customer_phone": customer_phone,
+        "description": description,
+        "amount": amount,
+    }
+
 # ============ ADMIN STATS ============
 
 @api_router.get("/admin/stats")
