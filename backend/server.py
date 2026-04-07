@@ -1034,6 +1034,42 @@ async def send_facebook_purchase_event(order: dict):
     except Exception as e:
         logger.error(f"Failed to send Facebook Purchase event: {e}")
 
+# ============ ADMIN STAFF ORDERS ============
+
+@api_router.post("/admin/staff-order")
+async def create_staff_order(data: dict):
+    """Create a staff/custom order from the admin builder — no payment needed"""
+    order_number = f"STAFF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
+    order_id = str(uuid.uuid4())
+
+    order = {
+        "id": order_id,
+        "order_number": order_number,
+        "customer_name": data.get("customer_name", "Staff Order"),
+        "customer_email": "",
+        "customer_phone": "",
+        "items": [{
+            "templateName": data.get("template_name", ""),
+            "templateId": data.get("template_id", ""),
+            "headUrl": data.get("head_url", ""),
+            "originalPhotoUrl": data.get("original_photo_url", ""),
+            "titleText": data.get("title_text", ""),
+            "subtitleText": data.get("subtitle_text", ""),
+            "line3Text": data.get("line3_text", ""),
+            "headPlacement": data.get("head_placement", {}),
+            "size": "Custom",
+            "quantity": 1,
+            "price": 0,
+        }],
+        "total_amount": 0,
+        "status": "staff_order",
+        "order_type": "staff",
+        "gdpr_consent": True,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.orders.insert_one(order)
+    return {"order_id": order_id, "order_number": order_number}
+
 # ============ ADMIN PAYMENT LINKS ============
 
 @api_router.post("/admin/payment-links")
