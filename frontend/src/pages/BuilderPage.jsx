@@ -806,7 +806,9 @@ export default function BuilderPage() {
                   )}
 
                   {/* Normal customer mode */}
-                  {!isStaff && (                  {builderMode==='bulk' && (
+                  {!isStaff && (
+                  <>
+                  {builderMode==='bulk' && (
                     <div className="mb-4 p-3 rounded-xl border text-sm bg-[#FFF9E6] border-[#FFE600]">
                       {getTotalQty() === 0 ? (
                         <div className="space-y-1">
