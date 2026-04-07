@@ -15,7 +15,7 @@ import { toast } from 'sonner';
 import {
   Upload, RotateCw, ZoomIn, ZoomOut, Move, Trash2,
   Plus, Minus, ShoppingCart, Users, Shirt, ChevronRight,
-  CheckCircle, AlertCircle, Loader2, Type, Info, X, Sparkles
+  CheckCircle, AlertCircle, Loader2, Type, Info, X, Sparkles, Download
 } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -522,6 +522,43 @@ export default function BuilderPage() {
     navigate('/cart');
   };
 
+  // Staff mode — skip checkout, just save & download
+  const isStaff = searchParams.get('staff') === 'true';
+  const staffCustomerName = searchParams.get('customer') || 'Staff Order';
+
+  const [staffSaving, setStaffSaving] = useState(false);
+
+  const handleStaffSave = async () => {
+    if (!selectedTemplate) { toast.error('Please select a template'); return; }
+    setStaffSaving(true);
+    try {
+      const res = await fetch(`${API}/admin/staff-order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_name: staffCustomerName || 'Staff Order',
+          template_id: selectedTemplate.id,
+          template_name: selectedTemplate.name,
+          head_url: headCutout?.head_url || '',
+          original_photo_url: originalPhoto?.original_url || '',
+          title_text: line1Text,
+          subtitle_text: line2Text,
+          line3_text: line3Text,
+          head_placement: headPlacement,
+        })
+      });
+      if (!res.ok) throw new Error('Failed to save');
+      const data = await res.json();
+      toast.success('Order saved! Downloading files...');
+      // Trigger download
+      window.open(`${process.env.REACT_APP_BACKEND_URL}/api/orders/${data.order_id}/download`, '_blank');
+    } catch(e) {
+      toast.error('Failed to save order');
+    } finally {
+      setStaffSaving(false);
+    }
+  };
+
   const canProceed = () => step === 1 ? !!selectedTemplate : true;
 
   const goNextStep = () => {
@@ -753,7 +790,23 @@ export default function BuilderPage() {
                 <motion.div key="s4" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}} className="bg-white rounded-2xl shadow-sm p-6">
                   <h3 className="font-['Anton'] text-lg text-[#252A34] mb-4 tracking-wide">4. {builderMode==='bulk'?'SIZES & QUANTITIES':'ADD TO ORDER'}</h3>
 
-                  {builderMode==='bulk' && (
+                  {/* Staff mode — skip sizes, just save & download */}
+                  {isStaff && (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-[#FFF9E6] border border-[#FFE600] rounded-xl">
+                        <p className="font-bold text-[#252A34] mb-1">Staff Order — {staffCustomerName}</p>
+                        <p className="text-sm text-gray-600">Click Save & Download to create the order and download the design files. No payment or sizes needed.</p>
+                      </div>
+                      <Button onClick={handleStaffSave} disabled={staffSaving}
+                        className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 text-lg font-bold uppercase tracking-wider gap-2">
+                        <Download className="w-5 h-5" />
+                        {staffSaving ? 'Saving...' : 'Save & Download Files'}
+                      </Button>
+                    </div>
+                  )}
+
+                  {/* Normal customer mode */}
+                  {!isStaff && (                  {builderMode==='bulk' && (
                     <div className="mb-4 p-3 rounded-xl border text-sm bg-[#FFF9E6] border-[#FFE600]">
                       {getTotalQty() === 0 ? (
                         <div className="space-y-1">
@@ -922,6 +975,8 @@ export default function BuilderPage() {
                         </>
                       )}
                     </div>
+                  )}
+                  </>
                   )}
                 </motion.div>
               )}

@@ -440,7 +440,7 @@ export default function AdminPage() {
                       const StatusIcon = STATUS_ICONS[order.status] || Clock;
                       return (
                         <tr key={order.id} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-6 py-4"><p className="font-mono text-sm font-bold text-[#252A34]">{order.order_number}</p></td>
+                          <td className="px-6 py-4"><p className="font-mono text-sm font-bold text-[#252A34]">{order.order_number}</p>{order.order_type === 'staff' && <span className="text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded-full font-medium">Staff</span>}{order.order_type === 'custom_payment_link' && <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-medium">Payment Link</span>}</td>
                           <td className="px-6 py-4"><p className="text-sm font-medium text-gray-700">{order.customer_name}</p><p className="text-xs text-gray-400">{order.customer_email}</p></td>
                           <td className="px-6 py-4"><span className="text-sm text-gray-600">{order.items?.length || 0} item{order.items?.length !== 1?'s':''}</span></td>
                           <td className="px-6 py-4"><span className="font-bold text-[#FF2E63]">£{order.total_amount?.toFixed(2)}</span></td>
