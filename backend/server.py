@@ -21,6 +21,8 @@ import shutil
 import stripe
 import cloudinary
 import cloudinary.uploader
+import boto3
+from botocore.config import Config as BotoConfig
 import resend
 
 ROOT_DIR = Path(__file__).parent
@@ -441,20 +443,14 @@ async def upload_preview(file: UploadFile = File(...)):
     preview_id = str(uuid.uuid4())
     image_data = await file.read()
 
-    # Try Cloudinary first (permanent storage, survives Railway redeploys)
-    cloudinary_api_key = os.environ.get('CLOUDINARY_API_KEY', '')
-    if cloudinary_api_key:
+    # Upload preview to R2
+    if R2_ACCESS_KEY:
         try:
-            result = cloudinary.uploader.upload(
-                image_data,
-                public_id=f"previews/{preview_id}",
-                folder="swap_my_face_previews",
-                resource_type="image",
-                format="png"
-            )
-            preview_url = result.get('secure_url')
-            logger.info(f"Preview uploaded to Cloudinary: {preview_url}")
-            return {"preview_url": preview_url, "id": preview_id, "storage": "cloudinary"}
+            r2_key = f"previews/{preview_id}.png"
+            preview_url = upload_to_r2(image_data, r2_key, "image/png")
+            if preview_url:
+                logger.info(f"Preview uploaded to R2: {preview_url}")
+                return {"preview_url": preview_url, "id": preview_id, "storage": "r2"}
         except Exception as e:
             logger.warning(f"Cloudinary upload failed, falling back to local: {e}")
 
@@ -1217,8 +1213,8 @@ async def submit_custom_order(
         try:
             contents = await photo.read()
             if contents:
-                result = cloudinary.uploader.upload(contents, folder="custom_orders", resource_type="image")
-                photo_url = result.get("secure_url")
+                r2_key = f"custom_orders/{uuid.uuid4()}.jpg"
+                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
         except Exception as e:
             logger.error(f"Custom order photo upload failed: {e}")
 
@@ -1289,8 +1285,8 @@ async def submit_review(
         try:
             contents = await photo.read()
             if contents:
-                result = cloudinary.uploader.upload(contents, folder="reviews", resource_type="image")
-                photo_url = result.get("secure_url")
+                r2_key = f"reviews/{uuid.uuid4()}.jpg"
+                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
         except Exception as e:
             logger.error(f"Review photo upload failed: {e}")
 
@@ -1339,10 +1335,10 @@ async def update_review_with_photo(
     photo_url = None
     if photo and photo.filename:
         try:
-            import cloudinary.uploader
             contents = await photo.read()
-            result = cloudinary.uploader.upload(contents, folder="reviews", resource_type="image")
-            photo_url = result.get("secure_url")
+            if contents:
+                r2_key = f"reviews/{uuid.uuid4()}.jpg"
+                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
         except Exception as e:
             logger.error(f"Review photo upload failed: {e}")
 
@@ -1380,8 +1376,8 @@ async def admin_add_review(
         try:
             contents = await photo.read()
             if contents:
-                result = cloudinary.uploader.upload(contents, folder="reviews", resource_type="image")
-                photo_url = result.get("secure_url")
+                r2_key = f"reviews/{uuid.uuid4()}.jpg"
+                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
         except Exception as e:
             logger.error(f"Review photo upload failed: {e}")
 
