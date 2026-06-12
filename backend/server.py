@@ -1032,6 +1032,79 @@ async def send_facebook_purchase_event(order: dict):
 
 # ============ ADMIN BULK TEMPLATE IMPORT ============
 
+@api_router.patch("/admin/templates/{template_id}")
+async def update_template(template_id: str, data: dict):
+    """Update a template by ID"""
+    allowed = {"name", "body_image_url", "product_image_url", "categories", "active", 
+               "is_popular", "is_new", "head_placement", "text_fields"}
+    clean = {k: v for k, v in data.items() if k in allowed}
+    if not clean:
+        raise HTTPException(status_code=400, detail="No valid fields")
+    await db.templates.update_one({"id": template_id}, {"$set": clean})
+    return {"message": "Updated"}
+
+@api_router.post("/admin/templates/fix-all-cloudinary")
+async def fix_all_cloudinary_urls():
+    """Replace all remaining Cloudinary URLs with R2 equivalents"""
+    BASE = "https://pub-ac6681582ccc439ca43cef357512c6bc.r2.dev"
+    
+    # Map of cloudinary filename patterns to R2 filenames
+    template_map = {
+        "LifeguardIIDESIGN-Stag-11": (f"{BASE}/templates/LifeguardIIDESIGN-Stag-11.png", f"{BASE}/products/LifeguardIIDESIGN-Stag-11.jpg"),
+        "ChickenmanDESIGN-Stag-4": (f"{BASE}/templates/ChickenmanDESIGN-Stag-4.png", f"{BASE}/products/ChickenmanDESIGN-Stag-4.jpg"),
+        "CvemanDESIGN-Stag-12": (f"{BASE}/templates/CvemanDESIGN-Stag-12.png", f"{BASE}/products/CvemanDESIGN-Stag-12.jpg"),
+        "WrestlerIIDESIGN-Stag-17": (f"{BASE}/templates/WrestlerIIDESIGN-Stag-17.png", f"{BASE}/products/WrestlerIIDESIGN-Stag-17.jpg"),
+        "80sDiscoIIDESIGN-Stag-10": (f"{BASE}/templates/80sDiscoIIDESIGN-Stag-10.png", f"{BASE}/products/80sDiscoIIDESIGN-Stag-10.jpg"),
+        "CheerleaderIIDESIGN-Stag-7": (f"{BASE}/templates/CheerleaderIIDESIGN-Stag-7.png", f"{BASE}/products/CheerleaderIIDESIGN-Stag-7.jpg"),
+        "BallerinaIIDESIGN-Stag-21": (f"{BASE}/templates/BallerinaIIDESIGN-Stag-21.png", f"{BASE}/products/BallerinaIIDESIGN-Stag-21.jpg"),
+        "WrestlerIDESIGN-TGPHEN25-47": (f"{BASE}/templates/WrestlerIDESIGN-TGPHEN25-47.png", f"{BASE}/products/WrestlerI-TGPHEN25-47.jpg"),
+        "TGPHEN25-25": (f"{BASE}/templates/TGPHEN25-25.png", f"{BASE}/products/TGPHEN25-25.jpg"),
+        "SumoIIDESIGN-TGPHEN25-56": (f"{BASE}/templates/SumoIIDESIGN-TGPHEN25-56.png", f"{BASE}/products/SumoII-TGPHEN25-56.jpg"),
+        "FunkyShirtDESIGN-TGPHEN25-30": (f"{BASE}/templates/FunkyShirtDESIGN-TGPHEN25-30.png", f"{BASE}/products/FunkyShirt-TGPHEN25-30.jpg"),
+        "DJBrideDESIGN-TGPHEN25-17": (f"{BASE}/templates/DJBrideDESIGN-TGPHEN25-17.png", f"{BASE}/products/DJBride-TGPHEN25-17.jpg"),
+        "BridefuelDESIGN-TGPHEN25-18": (f"{BASE}/templates/BridefuelDESIGN-TGPHEN25-18.png", f"{BASE}/products/Bridefuel-TGPHEN25-18.jpg"),
+        "WrestlerIIDESIGN-TGPHEN25-46": (f"{BASE}/templates/WrestlerIIDESIGN-TGPHEN25-46.png", f"{BASE}/products/WrestlerII-TGPHEN25-46.jpg"),
+        "UnicornDESIGN-TGPHEN25-34": (f"{BASE}/templates/UnicornDESIGN-TGPHEN25-34.png", f"{BASE}/products/Unicorn-TGPHEN25-34.jpg"),
+        "SuperheroIIIDESIGN-TGPHEN25-41": (f"{BASE}/templates/SuperheroIIIDESIGN-TGPHEN25-41.png", f"{BASE}/products/SuperheroIII-TGPHEN25-41.jpg"),
+        "SuperheroIIDESIGN-TGPHEN25-43": (f"{BASE}/templates/SuperheroIIDESIGN-TGPHEN25-43.png", f"{BASE}/products/SuperheroII-TGPHEN25-43.jpg"),
+        "80DiscoIIDESIGN-TGPHEN25-20": (f"{BASE}/templates/80DiscoIIDESIGN-TGPHEN25-20.png", f"{BASE}/products/80DiscoII-TGPHEN25-20.jpg"),
+        "BodybuilderDESIGN-TGPHEN25-15": (f"{BASE}/templates/BodybuilderDESIGN-TGPHEN25-15.png", f"{BASE}/products/Bodybuilder-TGPHEN25-15.jpg"),
+        "80sDiscoIDESIGN-TGPHEN25-19": (f"{BASE}/templates/80sDiscoIDESIGN-TGPHEN25-19.png", f"{BASE}/products/80sDiscoI-TGPHEN25-19.jpg"),
+        "BarbieDollDESIGN-TGPHEN25-1": (f"{BASE}/templates/BarbieDollDESIGN-TGPHEN25-1.png", f"{BASE}/products/BarbieDoll-TGPHEN25-1.jpg"),
+        "SuperheroDESIGN-Stag-2": (f"{BASE}/templates/SuperheroDESIGN-Stag-2.png", f"{BASE}/products/Superhero-Stag-2.jpg"),
+    }
+    
+    # Find all templates still using Cloudinary
+    all_templates = await db.templates.find({}).to_list(1000)
+    updated = 0
+    skipped = 0
+    
+    for template in all_templates:
+        body_url = template.get("body_image_url", "")
+        if "cloudinary" not in body_url:
+            skipped += 1
+            continue
+        
+        # Find matching R2 URLs by filename pattern
+        matched = False
+        for pattern, (new_body, new_product) in template_map.items():
+            if pattern in body_url:
+                await db.templates.update_one(
+                    {"_id": template["_id"]},
+                    {"$set": {
+                        "body_image_url": new_body,
+                        "product_image_url": new_product,
+                    }}
+                )
+                updated += 1
+                matched = True
+                break
+        
+        if not matched:
+            logger.warning(f"No R2 match found for: {body_url}")
+    
+    return {"message": f"Fixed {updated} templates, {skipped} already on R2"}
+
 @api_router.post("/admin/templates/fix-urls")
 async def fix_template_urls(data: dict):
     """Update specific template URLs by ID"""
