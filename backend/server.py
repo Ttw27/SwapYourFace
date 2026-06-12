@@ -1032,6 +1032,26 @@ async def send_facebook_purchase_event(order: dict):
 
 # ============ ADMIN BULK TEMPLATE IMPORT ============
 
+@api_router.post("/admin/templates/fix-urls")
+async def fix_template_urls(data: dict):
+    """Update specific template URLs by ID"""
+    fixes = data.get("fixes", [])
+    updated = 0
+    for fix in fixes:
+        template_id = fix.get("id")
+        if not template_id:
+            continue
+        result = await db.templates.update_one(
+            {"id": template_id},
+            {"$set": {
+                "body_image_url": fix.get("body_image_url"),
+                "product_image_url": fix.get("product_image_url"),
+            }}
+        )
+        if result.modified_count:
+            updated += 1
+    return {"message": f"Fixed {updated} template URLs"}
+
 @api_router.post("/admin/templates/bulk-import")
 async def bulk_import_templates(data: dict):
     """Bulk import or update templates from R2 URLs"""
