@@ -118,6 +118,7 @@ const SizeGuideModal = ({ type, onClose }) => {
         </div>
       </div>
     </div>
+    )}
   );
 };
 
@@ -347,6 +348,7 @@ export default function BuilderPage() {
   } = useStore();
 
   const [step, setStep] = useState(1);
+  const [showChoice, setShowChoice] = useState(true); // show choice screen before builder
   const [helpOpen, setHelpOpen] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -569,6 +571,51 @@ export default function BuilderPage() {
 
   return (
     <div className="min-h-screen bg-[#F7F7F7] pb-20">
+
+      {/* Choice screen */}
+      {showChoice && !isStaff && (
+        <div className="min-h-screen flex items-center justify-center p-6 bg-gradient-to-br from-[#252A34] to-[#1a1e26]">
+          <div className="max-w-3xl w-full">
+            <div className="text-center mb-10">
+              <h1 className="font-['Anton'] text-4xl sm:text-5xl text-white tracking-wide mb-3">CREATE YOUR SHIRTS</h1>
+              <p className="text-gray-400 text-lg">How would you like to order?</p>
+            </div>
+            <div className="grid sm:grid-cols-3 gap-4">
+              <button onClick={() => setShowChoice(false)}
+                className="flex flex-col items-start p-6 rounded-2xl border-2 border-white/10 bg-white/5 hover:border-[#FF2E63] hover:bg-[#FF2E63]/10 text-left transition-all group">
+                <div className="w-12 h-12 bg-[#FF2E63]/20 rounded-xl flex items-center justify-center mb-4">
+                  <Shirt className="w-6 h-6 text-[#FF2E63]" />
+                </div>
+                <p className="font-bold text-white text-lg mb-1">Same Design For All</p>
+                <p className="text-gray-400 text-sm mb-3">One face, one design — pick sizes &amp; quantities</p>
+                <span className="text-xs text-[#FF2E63] font-medium">Start building →</span>
+              </button>
+              <button onClick={() => { setShowChoice(false); setBuilderMode('multi'); }}
+                className="flex flex-col items-start p-6 rounded-2xl border-2 border-white/10 bg-white/5 hover:border-[#FF2E63] hover:bg-[#FF2E63]/10 text-left transition-all group">
+                <div className="w-12 h-12 bg-[#FF2E63]/20 rounded-xl flex items-center justify-center mb-4">
+                  <Users className="w-6 h-6 text-[#FF2E63]" />
+                </div>
+                <p className="font-bold text-white text-lg mb-1">Different Photo Per Person</p>
+                <p className="text-gray-400 text-sm mb-3">Upload a unique face for each group member</p>
+                <span className="text-xs text-[#FF2E63] font-medium">Start building →</span>
+              </button>
+              <Link to="/custom-order"
+                className="flex flex-col items-start p-6 rounded-2xl border-2 border-[#FFE600]/30 bg-[#FFE600]/5 hover:border-[#FFE600] hover:bg-[#FFE600]/10 text-left transition-all group">
+                <div className="w-12 h-12 bg-[#FFE600]/20 rounded-xl flex items-center justify-center mb-4">
+                  <Sparkles className="w-6 h-6 text-[#FFE600]" />
+                </div>
+                <p className="font-bold text-white text-lg mb-1">Do It For Me</p>
+                <p className="text-gray-400 text-sm mb-3">Send us your photo — we'll handle everything</p>
+                <span className="text-xs text-[#FFE600] font-medium">Get in touch →</span>
+              </Link>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Main builder */}
+      {(!showChoice || isStaff) && (
+        <div>
       {sizeGuideOpen && <SizeGuideModal type={shirtType} onClose={() => setSizeGuideOpen(false)} />}
 
       {/* Help Modal */}
@@ -716,6 +763,10 @@ export default function BuilderPage() {
               {step===2 && (
                 <motion.div key="s2" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}} className="bg-white rounded-2xl shadow-sm p-6">
                   <h3 className="font-['Anton'] text-lg text-[#252A34] mb-4 tracking-wide">2. UPLOAD A PHOTO</h3>
+                  <div className="mb-4 p-3 bg-[#FFF9E6] border border-[#FFE600] rounded-xl flex items-start gap-2">
+                    <span className="text-sm flex-shrink-0">🎨</span>
+                    <p className="text-xs text-gray-600">Our templates are stylised illustrations. If you'd like a template that better suits your group's skin tones, use our <a href="/custom-order" className="text-[#FF2E63] hover:underline font-medium">Custom Order service</a> and we'll create something just for you.</p>
+                  </div>
                   <div className="mb-6 p-4 bg-gray-50 rounded-xl">
                     <div className="flex items-start gap-3">
                       <Checkbox id="gdpr" checked={gdprConsent} onCheckedChange={setGdprConsent} />
@@ -1082,5 +1133,8 @@ export default function BuilderPage() {
         </div>
       </div>
     </div>
+    )}
+        </div>
+      )}
   );
 }
