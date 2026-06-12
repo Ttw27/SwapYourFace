@@ -1030,6 +1030,39 @@ async def send_facebook_purchase_event(order: dict):
     except Exception as e:
         logger.error(f"Failed to send Facebook Purchase event: {e}")
 
+# ============ ADMIN BULK TEMPLATE IMPORT ============
+
+@api_router.post("/admin/templates/bulk-import")
+async def bulk_import_templates(data: dict):
+    """Bulk import or update templates from R2 URLs"""
+    templates = data.get("templates", [])
+    if not templates:
+        raise HTTPException(status_code=400, detail="No templates provided")
+
+    inserted = 0
+    updated = 0
+    for t in templates:
+        name = t.get("name", "")
+        if not name:
+            continue
+        existing = await db.templates.find_one({"name": name})
+        doc = {
+            "name": name,
+            "body_image_url": t.get("body_image_url", ""),
+            "product_image_url": t.get("product_image_url", ""),
+            "categories": t.get("categories", ["stag"]),
+            "active": True,
+        }
+        if existing:
+            await db.templates.update_one({"name": name}, {"$set": doc})
+            updated += 1
+        else:
+            doc["id"] = str(uuid.uuid4())
+            await db.templates.insert_one(doc)
+            inserted += 1
+
+    return {"message": f"Done — {inserted} inserted, {updated} updated"}
+
 # ============ ADMIN STAFF ORDERS ============
 
 @api_router.post("/admin/staff-order")
