@@ -59,6 +59,21 @@ export default function AdminPage() {
   const [savingCode, setSavingCode] = useState(false);
   const [importingTemplates, setImportingTemplates] = useState(false);
   const [fixingUrls, setFixingUrls] = useState(false);
+  const [fixingAll, setFixingAll] = useState(false);
+
+  const handleFixAllCloudinary = async () => {
+    setFixingAll(true);
+    try {
+      const r = await fetch(`${API}/admin/templates/fix-all-cloudinary`, { method: 'POST' });
+      const data = await r.json();
+      toast.success(data.message);
+      fetchTemplates();
+    } catch(e) {
+      toast.error('Fix failed');
+    } finally {
+      setFixingAll(false);
+    }
+  };
 
   const handleFixUrls = async () => {
     setFixingUrls(true);
@@ -511,6 +526,9 @@ export default function AdminPage() {
             <div className="flex items-center justify-between">
               <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">TEMPLATES ({templates.length})</h2>
               <div className="flex gap-2">
+                <Button onClick={handleFixAllCloudinary} disabled={fixingAll} variant="outline" className="rounded-full gap-2 border-red-500 text-red-500 hover:bg-red-50">
+                  <Upload className="w-4 h-4" /> {fixingAll ? 'Fixing...' : '🔧 Fix All Cloudinary'}
+                </Button>
                 <Button onClick={handleFixUrls} disabled={fixingUrls} variant="outline" className="rounded-full gap-2 border-orange-500 text-orange-500 hover:bg-orange-50">
                   <Upload className="w-4 h-4" /> {fixingUrls ? 'Fixing...' : 'Fix Cloudinary URLs'}
                 </Button>
