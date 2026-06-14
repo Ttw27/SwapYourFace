@@ -1,35 +1,38 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { useStore } from '@/store/useStore';
 import { toast } from 'sonner';
-import { Upload, ChevronLeft, ChevronRight, CheckCircle, MessageCircle, Mail, Shirt, Users } from 'lucide-react';
+import { Upload, ChevronLeft, ChevronRight, CheckCircle, ShoppingCart, Loader2, Plus, Minus } from 'lucide-react';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-
 const SIZES = ['XS','S','M','L','XL','2XL','3XL'];
 
 export default function DoItForMePage() {
   const { templates, fetchTemplates, pricing, fetchPricing } = useStore();
   const navigate = useNavigate();
 
-  const [step, setStep] = useState(1); // 1=pick template, 2=details & sizes, 3=confirm
+  const [step, setStep] = useState(1);
   const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [filter, setFilter] = useState('all');
   const [photo, setPhoto] = useState(null);
   const [photoPreview, setPhotoPreview] = useState(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadedPhotoUrl, setUploadedPhotoUrl] = useState('');
+  const [isLoading, setIsLoading] = useState(false);
+
   const [form, setForm] = useState({
     name: '', email: '', phone: '',
-    title: '', subtitle: '', backName: '',
-    notes: '',
+    title: '', subtitle: '', notes: '',
   });
   const [sizes, setSizes] = useState({});
-  const [submitted, setSubmitted] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
+  // Back names: array of { size, index, name }
+  const [backNames, setBackNames] = useState([]);
+  const [hasBackPrint, setHasBackPrint] = useState(false);
 
   useEffect(() => {
     if (templates.length === 0) fetchTemplates();
@@ -37,6 +40,24 @@ export default function DoItForMePage() {
   }, []);
 
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  // Generate back name slots from sizes
+  useEffect(() => {
+    if (!hasBackPrint) { setBackNames([]); return; }
+    const slots = [];
+    SIZES.forEach(size => {
+      const qty = sizes[size] || 0;
+      for (let i = 0; i < qty; i++) {
+        const existing = backNames.find(b => b.size === size && b.index === i);
+        slots.push({ size, index: i, name: existing?.name || '' });
+      }
+    });
+    setBackNames(slots);
+  }, [sizes, hasBackPrint]);
+
+  const updateBackName = (size, index, name) => {
+    setBackNames(prev => prev.map(b => b.size === size && b.index === index ? { ...b, name } : b));
+  };
 
   const totalQty = Object.values(sizes).reduce((s, q) => s + q, 0);
 
@@ -48,55 +69,101 @@ export default function DoItForMePage() {
     return tiers.length ? tiers[tiers.length-1].price : 17.99;
   };
 
-  const handlePhotoChange = (e) => {
+  const backPrintPrice = pricing.back_print_price || 2.50;
+  const pricePerShirt = getTierPrice(totalQty);
+  const subtotal = totalQty * pricePerShirt + (hasBackPrint ? totalQty * backPrintPrice : 0);
+
+  const handlePhotoChange = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setPhoto(file);
     setPhotoPreview(URL.createObjectURL(file));
-  };
-
-  const handleSubmitWhatsApp = () => {
-    if (!form.name.trim() || !form.phone.trim()) { toast.error('Please enter your name and phone'); return; }
-    const sizeList = Object.entries(sizes).filter(([,q])=>q>0).map(([s,q])=>`${s}×${q}`).join(', ');
-    const msg = `Hi! I'd like to place a custom order 👋
-
-Name: ${form.name}
-Phone: ${form.phone}
-Email: ${form.email}
-
-Template: ${selectedTemplate?.name || 'Not selected'}
-Title text: ${form.title || 'None'}
-Subtitle: ${form.subtitle || 'None'}
-Back name: ${form.backName || 'None'}
-Sizes: ${sizeList || 'Not specified'}
-Total qty: ${totalQty}
-Notes: ${form.notes || 'None'}
-
-${photo ? 'I have my photo ready to send!' : ''}`;
-    window.open(`https://wa.me/447822032847?text=${encodeURIComponent(msg)}`, '_blank');
-    setSubmitted(true);
-  };
-
-  const handleSubmitEmail = async () => {
-    if (!form.name.trim() || !form.email.trim()) { toast.error('Please enter your name and email'); return; }
-    setSubmitting(true);
+    // Upload photo immediately
+    setUploading(true);
     try {
       const fd = new FormData();
-      const sizeList = Object.entries(sizes).filter(([,q])=>q>0).map(([s,q])=>`${s}×${q}`).join(', ');
-      fd.append('name', form.name);
-      fd.append('email', form.email);
-      fd.append('phone', form.phone);
-      fd.append('template', selectedTemplate?.name || '');
-      fd.append('quantity', totalQty.toString());
-      fd.append('notes', `Title: ${form.title}\nSubtitle: ${form.subtitle}\nBack name: ${form.backName}\nSizes: ${sizeList}\n\n${form.notes}`);
-      if (photo) fd.append('photo', photo);
-      const r = await fetch(`${API}/custom-order`, { method: 'POST', body: fd });
-      if (!r.ok) throw new Error();
-      setSubmitted(true);
+      fd.append('file', file);
+      const r = await fetch(`${API}/upload/photo`, { method: 'POST', body: fd });
+      if (r.ok) {
+        const data = await r.json();
+        setUploadedPhotoUrl(data.original_url || data.head_url || '');
+      }
     } catch(e) {
-      toast.error('Failed to send — please try WhatsApp instead');
+      console.error('Photo upload failed', e);
     } finally {
-      setSubmitting(false);
+      setUploading(false);
+    }
+  };
+
+  const handleCheckout = async () => {
+    if (!form.name.trim() || !form.email.trim() || !form.phone.trim()) {
+      toast.error('Please enter your name, email and phone'); return;
+    }
+    if (totalQty === 0) { toast.error('Please select at least one shirt size'); return; }
+    if (!selectedTemplate) { toast.error('Please select a template'); return; }
+
+    setIsLoading(true);
+    try {
+      // Build order items
+      const items = [];
+      SIZES.forEach(size => {
+        const qty = sizes[size] || 0;
+        if (qty === 0) return;
+        const namesForSize = backNames.filter(b => b.size === size).map(b => b.name);
+        items.push({
+          templateName: selectedTemplate.name,
+          templateId: selectedTemplate.id,
+          size,
+          quantity: qty,
+          price: pricePerShirt,
+          hasBackPrint,
+          backPrice: hasBackPrint ? backPrintPrice : 0,
+          backNames: namesForSize,
+          headUrl: uploadedPhotoUrl,
+          titleText: form.title,
+          subtitleText: form.subtitle,
+          orderType: 'do_it_for_me',
+          shirtType: 'unisex',
+        });
+      });
+
+      // Create order
+      const orderRes = await fetch(`${API}/orders`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_name: form.name,
+          customer_email: form.email,
+          customer_phone: form.phone,
+          items,
+          total_amount: subtotal,
+          order_type: 'do_it_for_me',
+          notes: form.notes,
+          gdpr_consent: true,
+        })
+      });
+      if (!orderRes.ok) throw new Error('Failed to create order');
+      const order = await orderRes.json();
+
+      // Create Stripe checkout
+      const checkoutRes = await fetch(`${API}/payments/create-checkout`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          items,
+          order_id: order.id,
+          customer_email: form.email,
+          success_url: `${window.location.origin}/cart`,
+          cancel_url: `${window.location.origin}/do-it-for-me`,
+        })
+      });
+      if (!checkoutRes.ok) throw new Error('Failed to create checkout');
+      const { checkout_url } = await checkoutRes.json();
+      sessionStorage.setItem('smf_order_total', subtotal.toFixed(2));
+      window.location.href = checkout_url;
+    } catch(e) {
+      toast.error('Something went wrong — please try again');
+      setIsLoading(false);
     }
   };
 
@@ -105,47 +172,27 @@ ${photo ? 'I have my photo ready to send!' : ''}`;
     return filter === 'all' || cats.includes(filter);
   });
 
-  if (submitted) {
-    return (
-      <div className="min-h-screen bg-[#F7F7F7] flex items-center justify-center p-6">
-        <div className="bg-white rounded-2xl shadow-sm p-8 max-w-md w-full text-center">
-          <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-            <CheckCircle className="w-8 h-8 text-green-600" />
-          </div>
-          <h2 className="font-['Anton'] text-2xl text-[#252A34] mb-2 tracking-wide">ENQUIRY SENT!</h2>
-          <p className="text-gray-500 mb-6">We'll be in touch as soon as possible to confirm your order and get started on the design.</p>
-          <div className="space-y-3">
-            <Link to="/"><Button className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-4 font-bold uppercase tracking-wider">Back to Home</Button></Link>
-            <Link to="/gallery"><Button variant="outline" className="w-full rounded-full py-4">Browse Templates</Button></Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="min-h-screen bg-[#F7F7F7]">
       {/* Header */}
-      <div className="bg-white border-b border-gray-100 py-6">
+      <div className="bg-white border-b border-gray-100 py-5 sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 sm:px-6">
-          <div className="flex items-center gap-4 mb-4">
+          <div className="flex items-center gap-4 mb-3">
             <button onClick={() => step > 1 ? setStep(s=>s-1) : navigate('/builder')}
               className="p-2 rounded-full hover:bg-gray-100 transition-colors">
               <ChevronLeft className="w-5 h-5 text-gray-500" />
             </button>
             <div>
               <h1 className="font-['Anton'] text-2xl sm:text-3xl text-[#252A34] tracking-wide">DO IT FOR ME</h1>
-              <p className="text-gray-500 text-sm">Tell us what you want — we'll design and send you a proof</p>
+              <p className="text-gray-500 text-sm">We'll design it — you pay & we send a proof before printing</p>
             </div>
           </div>
           {/* Step bar */}
           <div className="flex items-center gap-2">
-            {['Pick Template','Your Details','Confirm'].map((label, i) => (
+            {['Pick Template','Your Details','Review & Pay'].map((label, i) => (
               <div key={i} className="flex items-center gap-2">
                 <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-medium transition-colors ${step > i+1 ? 'bg-green-100 text-green-700' : step === i+1 ? 'bg-[#FF2E63] text-white' : 'bg-gray-100 text-gray-400'}`}>
-                  <span className="w-4 h-4 rounded-full flex items-center justify-center text-xs font-bold">
-                    {step > i+1 ? '✓' : i+1}
-                  </span>
+                  <span>{step > i+1 ? '✓' : i+1}</span>
                   <span className="hidden sm:inline">{label}</span>
                 </div>
                 {i < 2 && <ChevronRight className="w-3 h-3 text-gray-300" />}
@@ -156,173 +203,268 @@ ${photo ? 'I have my photo ready to send!' : ''}`;
       </div>
 
       <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8">
+        <AnimatePresence mode="wait">
 
-        {/* Step 1 — Pick template */}
-        {step === 1 && (
-          <motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}}>
-            <div className="flex gap-2 mb-6 flex-wrap">
-              {['all','stag','hen'].map(f => (
-                <button key={f} onClick={() => setFilter(f)}
-                  className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${filter===f?'bg-[#FF2E63] text-white':'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}>
-                  {f === 'all' ? 'All' : f === 'stag' ? 'Stag Do' : 'Hen Party'}
-                </button>
-              ))}
-            </div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
-              {filteredTemplates.map(t => (
-                <button key={t.id} onClick={() => { setSelectedTemplate(t); setStep(2); }}
-                  className={`bg-white rounded-2xl overflow-hidden border-2 transition-all text-left hover:shadow-md ${selectedTemplate?.id===t.id?'border-[#FF2E63] shadow-md':'border-gray-100'}`}>
-                  <div className="aspect-square bg-gray-50 overflow-hidden">
-                    <img src={t.product_image_url || t.body_image_url} alt={t.name}
-                      className="w-full h-full object-contain p-2" crossOrigin="anonymous" />
-                  </div>
-                  <div className="p-3">
-                    <p className="font-bold text-[#252A34] text-sm truncate">{t.name}</p>
-                    <p className="text-xs text-gray-400 capitalize">{(t.categories||[t.category])[0]}</p>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </motion.div>
-        )}
-
-        {/* Step 2 — Details */}
-        {step === 2 && (
-          <motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} className="grid lg:grid-cols-2 gap-6">
-            {/* Template preview */}
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">SELECTED TEMPLATE</h2>
-                <button onClick={() => setStep(1)} className="text-sm text-[#FF2E63] hover:underline">Change</button>
+          {/* ── Step 1: Pick template ── */}
+          {step === 1 && (
+            <motion.div key="s1" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}}>
+              <div className="flex gap-2 mb-6 flex-wrap">
+                {[['all','All'],['stag','Stag Do'],['hen','Hen Party']].map(([val,label]) => (
+                  <button key={val} onClick={() => setFilter(val)}
+                    className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${filter===val?'bg-[#FF2E63] text-white':'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}>
+                    {label}
+                  </button>
+                ))}
               </div>
-              {selectedTemplate && (
-                <div className="aspect-square bg-gray-50 rounded-xl overflow-hidden mb-3">
-                  <img src={selectedTemplate.product_image_url || selectedTemplate.body_image_url}
-                    alt={selectedTemplate.name} className="w-full h-full object-contain p-4" crossOrigin="anonymous" />
-                </div>
-              )}
-              <p className="font-bold text-[#252A34]">{selectedTemplate?.name}</p>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+                {filteredTemplates.map(t => (
+                  <button key={t.id} onClick={() => { setSelectedTemplate(t); setStep(2); }}
+                    className={`bg-white rounded-2xl overflow-hidden border-2 transition-all text-left hover:shadow-md ${selectedTemplate?.id===t.id?'border-[#FF2E63] shadow-md':'border-gray-100'}`}>
+                    <div className="aspect-square bg-gray-50 overflow-hidden">
+                      <img src={t.product_image_url || t.body_image_url} alt={t.name}
+                        className="w-full h-full object-contain p-2" crossOrigin="anonymous" />
+                    </div>
+                    <div className="p-3">
+                      <p className="font-bold text-[#252A34] text-sm truncate">{t.name}</p>
+                      <p className="text-xs text-gray-400 capitalize">{(t.categories||[t.category])[0]}</p>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </motion.div>
+          )}
 
-              {/* Photo upload */}
-              <div className="mt-4">
-                <Label className="font-bold text-[#252A34]">Upload Your Photo</Label>
-                <p className="text-xs text-gray-400 mb-2">We'll cut out the face and place it on the template</p>
-                <label className="flex flex-col items-center justify-center border-2 border-dashed border-gray-200 rounded-xl p-4 cursor-pointer hover:border-[#FF2E63] transition-colors">
-                  {photoPreview ? (
-                    <img src={photoPreview} alt="Preview" className="w-24 h-24 rounded-full object-cover mb-2" />
-                  ) : (
-                    <Upload className="w-8 h-8 text-gray-300 mb-2" />
+          {/* ── Step 2: Details ── */}
+          {step === 2 && (
+            <motion.div key="s2" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}}>
+              <div className="grid lg:grid-cols-2 gap-6">
+                {/* Left: template preview + photo */}
+                <div className="space-y-4">
+                  <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                    <div className="flex items-center justify-between mb-3">
+                      <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">YOUR TEMPLATE</h2>
+                      <button onClick={() => setStep(1)} className="text-sm text-[#FF2E63] hover:underline">Change</button>
+                    </div>
+                    {selectedTemplate && (
+                      <div className="aspect-square bg-gray-50 rounded-xl overflow-hidden">
+                        <img src={selectedTemplate.product_image_url || selectedTemplate.body_image_url}
+                          alt={selectedTemplate.name} className="w-full h-full object-contain p-4" crossOrigin="anonymous" />
+                      </div>
+                    )}
+                    <p className="font-bold text-[#252A34] mt-2">{selectedTemplate?.name}</p>
+                  </div>
+
+                  {/* Photo upload */}
+                  <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                    <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide mb-1">YOUR PHOTO</h2>
+                    <p className="text-xs text-gray-400 mb-3">We'll cut out the face and place it on the template for you</p>
+                    <label className="flex flex-col items-center justify-center border-2 border-dashed border-gray-200 rounded-xl p-5 cursor-pointer hover:border-[#FF2E63] transition-colors">
+                      {photoPreview ? (
+                        <div className="flex items-center gap-3">
+                          <img src={photoPreview} alt="Preview" className="w-16 h-16 rounded-full object-cover" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-700">{photo?.name}</p>
+                            {uploading && <p className="text-xs text-gray-400">Uploading...</p>}
+                            {!uploading && uploadedPhotoUrl && <p className="text-xs text-green-600">✓ Uploaded</p>}
+                            <p className="text-xs text-[#FF2E63] mt-1">Click to change</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <Upload className="w-8 h-8 text-gray-300 mb-2" />
+                          <p className="text-sm font-medium text-gray-500">Click to upload photo</p>
+                          <p className="text-xs text-gray-400 mt-1">JPG, PNG — clear front-facing photo works best</p>
+                        </>
+                      )}
+                      <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
+                    </label>
+                  </div>
+                </div>
+
+                {/* Right: form */}
+                <div className="space-y-4">
+                  {/* Contact details */}
+                  <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+                    <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">YOUR DETAILS</h2>
+                    <div className="grid sm:grid-cols-2 gap-3">
+                      <div><Label>Name <span className="text-[#FF2E63]">*</span></Label><Input value={form.name} onChange={e=>setF('name',e.target.value)} placeholder="Your name" className="mt-1"/></div>
+                      <div><Label>Phone <span className="text-[#FF2E63]">*</span></Label><Input value={form.phone} onChange={e=>setF('phone',e.target.value)} placeholder="07911 123456" className="mt-1"/></div>
+                    </div>
+                    <div><Label>Email <span className="text-[#FF2E63]">*</span></Label><Input type="email" value={form.email} onChange={e=>setF('email',e.target.value)} placeholder="your@email.com" className="mt-1"/><p className="text-xs text-gray-400 mt-1">Your proof will be sent here</p></div>
+                  </div>
+
+                  {/* Text on shirt */}
+                  <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+                    <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">TEXT ON SHIRT</h2>
+                    <div><Label>Main Title</Label><Input value={form.title} onChange={e=>setF('title',e.target.value)} placeholder="e.g. DAVE'S STAG DO" className="mt-1"/></div>
+                    <div><Label>Subtitle</Label><Input value={form.subtitle} onChange={e=>setF('subtitle',e.target.value)} placeholder="e.g. BENIDORM 2025" className="mt-1"/></div>
+                  </div>
+
+                  {/* Sizes */}
+                  <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+                    <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">SIZES</h2>
+                    {totalQty > 0 && (
+                      <div className="p-3 bg-[#FFF9E6] border border-[#FFE600] rounded-xl text-sm">
+                        <span className="font-bold text-[#252A34]">{totalQty} shirt{totalQty!==1?'s':''} — </span>
+                        <span className="text-[#FF2E63] font-bold">£{pricePerShirt.toFixed(2)} each</span>
+                        {pricing.tiers && (() => {
+                          const next = [...(pricing.tiers||[])].sort((a,b)=>a.min_qty-b.min_qty).find(t=>t.min_qty>totalQty);
+                          return next ? <span className="text-gray-500"> · Add {next.min_qty-totalQty} more for £{next.price.toFixed(2)}/shirt</span> : null;
+                        })()}
+                      </div>
+                    )}
+                    <div className="grid grid-cols-4 gap-2">
+                      {SIZES.map(size => (
+                        <div key={size} className="flex flex-col items-center gap-1">
+                          <span className="text-xs font-bold text-gray-500">{size}</span>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => setSizes(s=>({...s,[size]:Math.max(0,(s[size]||0)-1)}))}
+                              className="w-6 h-6 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-xs font-bold">-</button>
+                            <span className="w-6 text-center text-sm font-bold">{sizes[size]||0}</span>
+                            <button onClick={() => setSizes(s=>({...s,[size]:(s[size]||0)+1}))}
+                              className="w-6 h-6 rounded-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white flex items-center justify-center text-xs font-bold">+</button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Back print */}
+                  {totalQty > 0 && (
+                    <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">BACK NAMES</h2>
+                          <p className="text-xs text-gray-400">+£{backPrintPrice.toFixed(2)} per shirt</p>
+                        </div>
+                        <button onClick={() => setHasBackPrint(!hasBackPrint)}
+                          className={`relative w-12 h-6 rounded-full transition-colors ${hasBackPrint?'bg-[#FF2E63]':'bg-gray-200'}`}>
+                          <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${hasBackPrint?'translate-x-7':'translate-x-1'}`}/>
+                        </button>
+                      </div>
+                      {hasBackPrint && backNames.length > 0 && (
+                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                          {backNames.map((b, i) => (
+                            <div key={`${b.size}-${b.index}`} className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-gray-500 w-8 flex-shrink-0">{b.size}</span>
+                              <Input
+                                value={b.name}
+                                onChange={e => updateBackName(b.size, b.index, e.target.value)}
+                                placeholder={`Back name for shirt ${i+1}`}
+                                className="text-sm h-8"
+                              />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   )}
-                  <p className="text-sm text-gray-500">{photo ? photo.name : 'Click to upload photo'}</p>
-                  <input type="file" accept="image/*" onChange={handlePhotoChange} className="hidden" />
-                </label>
-              </div>
-            </div>
 
-            {/* Details form */}
-            <div className="space-y-4">
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 space-y-4">
-                <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">YOUR DETAILS</h2>
-                <div className="grid sm:grid-cols-2 gap-3">
-                  <div><Label>Name <span className="text-[#FF2E63]">*</span></Label><Input value={form.name} onChange={e=>setF('name',e.target.value)} placeholder="Your name" className="mt-1"/></div>
-                  <div><Label>Phone <span className="text-[#FF2E63]">*</span></Label><Input value={form.phone} onChange={e=>setF('phone',e.target.value)} placeholder="07911 123456" className="mt-1"/></div>
+                  {/* Notes */}
+                  <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100">
+                    <Label className="font-bold text-[#252A34]">Any other notes?</Label>
+                    <Textarea value={form.notes} onChange={e=>setF('notes',e.target.value)}
+                      placeholder="Skin tone preferences, colour requests, anything else we should know..." rows={3} className="mt-1"/>
+                  </div>
+
+                  <Button onClick={() => {
+                    if (!form.name.trim() || !form.email.trim() || !form.phone.trim()) { toast.error('Please fill in your details'); return; }
+                    if (totalQty === 0) { toast.error('Please select at least one size'); return; }
+                    setStep(3);
+                  }} className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-5 font-bold uppercase tracking-wider">
+                    Review Order <ChevronRight className="w-5 h-5 ml-2" />
+                  </Button>
                 </div>
-                <div><Label>Email <span className="text-[#FF2E63]">*</span></Label><Input type="email" value={form.email} onChange={e=>setF('email',e.target.value)} placeholder="your@email.com" className="mt-1"/></div>
               </div>
+            </motion.div>
+          )}
 
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 space-y-4">
-                <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">TEXT ON SHIRT</h2>
-                <div><Label>Main Title (e.g. "DAVE'S STAG DO")</Label><Input value={form.title} onChange={e=>setF('title',e.target.value)} placeholder="e.g. DAVE'S STAG DO" className="mt-1"/></div>
-                <div><Label>Subtitle (e.g. "BENIDORM 2025")</Label><Input value={form.subtitle} onChange={e=>setF('subtitle',e.target.value)} placeholder="e.g. BENIDORM 2025" className="mt-1"/></div>
-                <div><Label>Back Name (£2.50 extra per shirt)</Label><Input value={form.backName} onChange={e=>setF('backName',e.target.value)} placeholder="e.g. The Groom" className="mt-1"/></div>
-              </div>
-
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 space-y-4">
-                <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">SIZES</h2>
-                {totalQty > 0 && (
-                  <div className="p-3 bg-[#FFF9E6] border border-[#FFE600] rounded-xl text-sm">
-                    <span className="font-bold text-[#252A34]">{totalQty} shirt{totalQty!==1?'s':''} — </span>
-                    <span className="text-[#FF2E63] font-bold">£{getTierPrice(totalQty).toFixed(2)} each</span>
-                    {pricing.tiers && (() => {
-                      const next = [...pricing.tiers].sort((a,b)=>a.min_qty-b.min_qty).find(t=>t.min_qty>totalQty);
-                      return next ? <span className="text-gray-500"> · Add {next.min_qty-totalQty} more for £{next.price.toFixed(2)}/shirt</span> : null;
-                    })()}
+          {/* ── Step 3: Review & Pay ── */}
+          {step === 3 && (
+            <motion.div key="s3" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}} className="max-w-2xl mx-auto space-y-5">
+              {/* Template & photo */}
+              <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
+                <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide mb-4">ORDER REVIEW</h2>
+                <div className="flex gap-4 mb-4">
+                  {selectedTemplate && (
+                    <img src={selectedTemplate.product_image_url || selectedTemplate.body_image_url}
+                      alt={selectedTemplate.name} className="w-20 h-20 object-contain bg-gray-50 rounded-xl p-1 flex-shrink-0" crossOrigin="anonymous" />
+                  )}
+                  <div className="text-sm space-y-1 text-gray-600">
+                    <p><strong className="text-[#252A34]">Template:</strong> {selectedTemplate?.name}</p>
+                    <p><strong className="text-[#252A34]">Name:</strong> {form.name}</p>
+                    <p><strong className="text-[#252A34]">Email:</strong> {form.email}</p>
+                    <p><strong className="text-[#252A34]">Phone:</strong> {form.phone}</p>
+                    {form.title && <p><strong className="text-[#252A34]">Title:</strong> {form.title}</p>}
+                    {form.subtitle && <p><strong className="text-[#252A34]">Subtitle:</strong> {form.subtitle}</p>}
+                  </div>
+                </div>
+                {photoPreview && (
+                  <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-xl mb-4">
+                    <img src={photoPreview} alt="Photo" className="w-10 h-10 rounded-full object-cover" />
+                    <p className="text-sm text-green-700 font-medium">Photo uploaded ✓</p>
                   </div>
                 )}
-                <div className="grid grid-cols-4 gap-2">
-                  {SIZES.map(size => (
-                    <div key={size} className="flex flex-col items-center gap-1">
-                      <span className="text-xs font-bold text-gray-500">{size}</span>
-                      <div className="flex items-center gap-1">
-                        <button onClick={() => setSizes(s=>({...s,[size]:Math.max(0,(s[size]||0)-1)}))}
-                          className="w-6 h-6 rounded-full bg-gray-100 hover:bg-gray-200 flex items-center justify-center text-xs">-</button>
-                        <span className="w-6 text-center text-sm font-bold">{sizes[size]||0}</span>
-                        <button onClick={() => setSizes(s=>({...s,[size]:(s[size]||0)+1}))}
-                          className="w-6 h-6 rounded-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white flex items-center justify-center text-xs">+</button>
+                {/* Sizes summary */}
+                <div className="border-t border-gray-100 pt-4 space-y-2">
+                  {SIZES.filter(s => (sizes[s]||0) > 0).map(size => {
+                    const names = backNames.filter(b=>b.size===size);
+                    return (
+                      <div key={size} className="flex items-start justify-between text-sm">
+                        <div>
+                          <span className="font-medium text-[#252A34]">{size} × {sizes[size]}</span>
+                          {names.length > 0 && names.some(b=>b.name) && (
+                            <div className="text-xs text-gray-400 mt-0.5">
+                              {names.map((b,i) => b.name && <span key={i} className="mr-2">Back: {b.name}</span>)}
+                            </div>
+                          )}
+                        </div>
+                        <span className="text-gray-600">£{(pricePerShirt * (sizes[size]||0) + (hasBackPrint ? backPrintPrice * (sizes[size]||0) : 0)).toFixed(2)}</span>
                       </div>
+                    );
+                  })}
+                  {hasBackPrint && (
+                    <div className="flex justify-between text-sm text-gray-500">
+                      <span>Back print (×{totalQty})</span>
+                      <span>included above</span>
                     </div>
+                  )}
+                  <div className="flex justify-between font-bold text-lg pt-2 border-t border-gray-100">
+                    <span>Total</span>
+                    <span className="text-[#FF2E63]">£{subtotal.toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* What happens next */}
+              <div className="bg-[#FFF9E6] border border-[#FFE600] rounded-2xl p-5">
+                <p className="font-bold text-[#252A34] mb-2">What happens after you pay?</p>
+                <ol className="text-sm text-gray-600 space-y-1 list-decimal pl-4">
+                  <li>We receive your order and design the shirt using your photo</li>
+                  <li>We email you a digital proof to approve (usually within 24 hours)</li>
+                  <li>Once you approve, we print and dispatch</li>
+                  <li>Free UK delivery in 5–8 working days</li>
+                </ol>
+              </div>
+
+              {/* Pay button */}
+              <Button onClick={handleCheckout} disabled={isLoading}
+                className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 text-lg font-bold uppercase tracking-wider gap-3">
+                {isLoading ? <><Loader2 className="w-5 h-5 animate-spin" /> Processing...</> : <><ShoppingCart className="w-5 h-5" /> Pay Securely — £{subtotal.toFixed(2)}</>}
+              </Button>
+
+              {/* Stripe trust */}
+              <div className="border border-gray-100 rounded-xl p-4 space-y-2 text-center">
+                <p className="text-xs text-gray-500">🔒 Secured by Stripe — we never see or store your card details</p>
+                <div className="flex items-center justify-center gap-3">
+                  {['VISA','MC','AMEX','APPLE PAY'].map(c => (
+                    <span key={c} className="text-xs font-bold text-gray-400 border border-gray-200 rounded px-1.5 py-0.5">{c}</span>
                   ))}
                 </div>
               </div>
-
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100">
-                <Label className="font-bold text-[#252A34]">Any other notes?</Label>
-                <Textarea value={form.notes} onChange={e=>setF('notes',e.target.value)} placeholder="Anything else we should know..." rows={3} className="mt-1"/>
-              </div>
-
-              <Button onClick={() => {
-                if (!form.name.trim()) { toast.error('Please enter your name'); return; }
-                setStep(3);
-              }} className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-5 font-bold uppercase tracking-wider">
-                Continue <ChevronRight className="w-5 h-5 ml-2" />
-              </Button>
-            </div>
-          </motion.div>
-        )}
-
-        {/* Step 3 — Confirm & send */}
-        {step === 3 && (
-          <motion.div initial={{opacity:0,y:10}} animate={{opacity:1,y:0}} className="max-w-2xl mx-auto space-y-6">
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 space-y-3">
-              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">ORDER SUMMARY</h2>
-              <div className="flex gap-4">
-                {selectedTemplate && (
-                  <img src={selectedTemplate.product_image_url || selectedTemplate.body_image_url}
-                    alt={selectedTemplate.name} className="w-20 h-20 object-contain bg-gray-50 rounded-xl p-1" crossOrigin="anonymous" />
-                )}
-                <div className="text-sm space-y-1 text-gray-600">
-                  <p><strong>Template:</strong> {selectedTemplate?.name}</p>
-                  <p><strong>Title:</strong> {form.title || 'None'}</p>
-                  <p><strong>Subtitle:</strong> {form.subtitle || 'None'}</p>
-                  <p><strong>Back name:</strong> {form.backName || 'None'}</p>
-                  <p><strong>Sizes:</strong> {Object.entries(sizes).filter(([,q])=>q>0).map(([s,q])=>`${s}×${q}`).join(', ') || 'None selected'}</p>
-                  <p><strong>Total qty:</strong> {totalQty} shirts {totalQty>0&&<span className="text-[#FF2E63] font-bold">@ £{getTierPrice(totalQty).toFixed(2)}/shirt</span>}</p>
-                </div>
-              </div>
-              {photoPreview && (
-                <div className="flex items-center gap-3 p-3 bg-green-50 border border-green-200 rounded-xl">
-                  <img src={photoPreview} alt="Photo" className="w-10 h-10 rounded-full object-cover" />
-                  <p className="text-sm text-green-700 font-medium">Photo attached ✓</p>
-                </div>
-              )}
-            </div>
-
-            <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 space-y-3">
-              <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">HOW WOULD YOU LIKE TO SEND?</h2>
-              <div className="grid sm:grid-cols-2 gap-3">
-                <Button onClick={handleSubmitWhatsApp}
-                  className="w-full bg-[#25D366] hover:bg-[#20b958] text-white rounded-full py-5 font-bold uppercase tracking-wider gap-2">
-                  <MessageCircle className="w-5 h-5" /> Send via WhatsApp
-                </Button>
-                <Button onClick={handleSubmitEmail} disabled={submitting} variant="outline"
-                  className="w-full rounded-full py-5 font-bold uppercase tracking-wider gap-2 border-[#252A34] text-[#252A34] hover:bg-[#252A34] hover:text-white">
-                  <Mail className="w-5 h-5" /> {submitting ? 'Sending...' : 'Send Enquiry'}
-                </Button>
-              </div>
-              <p className="text-xs text-center text-gray-400">WhatsApp is fastest — we typically respond within the hour</p>
-            </div>
-          </motion.div>
-        )}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </div>
   );
