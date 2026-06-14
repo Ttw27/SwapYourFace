@@ -209,7 +209,7 @@ export default function DoItForMePage() {
           {step === 1 && (
             <motion.div key="s1" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}}>
               <div className="flex gap-2 mb-6 flex-wrap">
-                {[['all','All'],['stag','Stag Do'],['hen','Hen Party']].map(([val,label]) => (
+                {[['all','All'],['stag','Stag Do'],['hen','Hen Party'],['party','Party']].map(([val,label]) => (
                   <button key={val} onClick={() => setFilter(val)}
                     className={`px-4 py-2 rounded-full text-sm font-medium transition-colors ${filter===val?'bg-[#FF2E63] text-white':'bg-white text-gray-600 hover:bg-gray-50 border border-gray-200'}`}>
                     {label}
@@ -338,8 +338,8 @@ export default function DoItForMePage() {
                           <p className="text-xs text-gray-400">+£{backPrintPrice.toFixed(2)} per shirt</p>
                         </div>
                         <button onClick={() => setHasBackPrint(!hasBackPrint)}
-                          className={`relative w-12 h-6 rounded-full transition-colors ${hasBackPrint?'bg-[#FF2E63]':'bg-gray-200'}`}>
-                          <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${hasBackPrint?'translate-x-7':'translate-x-1'}`}/>
+                          className={`relative inline-flex flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${hasBackPrint?'bg-[#FF2E63]':'bg-gray-200'}`}>
+                          <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transform transition-transform duration-200 ${hasBackPrint?'translate-x-5':'translate-x-0.5'}`}/>
                         </button>
                       </div>
                       {hasBackPrint && backNames.length > 0 && (
