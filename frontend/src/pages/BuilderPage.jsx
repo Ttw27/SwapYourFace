@@ -661,7 +661,7 @@ export default function BuilderPage() {
               <div className="flex items-center gap-2 font-bold text-sm"><Users className="w-4 h-4" /> Different Photo Per Person</div>
               <p className="text-xs font-normal mt-0.5 text-gray-400">Upload a unique face for each group member</p>
             </button>
-            <Link to="/custom-order"
+            <Link to="/do-it-for-me"
               className="flex flex-col items-start px-5 py-3 rounded-2xl transition-all text-left border-2 border-[#252A34] bg-[#252A34] text-white hover:bg-black">
               <div className="flex items-center gap-2 font-bold text-sm"><Sparkles className="w-4 h-4" /> Do It For Me</div>
               <p className="text-xs font-normal mt-0.5 text-white/60">Send us your photo — we'll handle everything</p>
@@ -688,7 +688,7 @@ export default function BuilderPage() {
 
       {/* Choice screen overlay */}
       {showChoice && !isStaff && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-gradient-to-br from-[#252A34] to-[#1a1e26]">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6" style={{background: "rgba(37,42,52,0.85)", backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)"}}>
           <div className="max-w-3xl w-full">
             <div className="text-center mb-10">
               <h1 className="font-['Anton'] text-4xl sm:text-5xl text-white tracking-wide mb-3">CREATE YOUR SHIRTS</h1>
@@ -713,7 +713,7 @@ export default function BuilderPage() {
                 <p className="text-gray-400 text-sm mb-3">Upload a unique face for each group member</p>
                 <span className="text-xs text-[#FF2E63] font-medium">Start building →</span>
               </button>
-              <Link to="/custom-order"
+              <Link to="/do-it-for-me"
                 className="flex flex-col items-start p-6 rounded-2xl border-2 border-[#FFE600]/30 bg-[#FFE600]/5 hover:border-[#FFE600] hover:bg-[#FFE600]/10 text-left transition-all">
                 <div className="w-12 h-12 bg-[#FFE600]/20 rounded-xl flex items-center justify-center mb-4">
                   <Sparkles className="w-6 h-6 text-[#FFE600]" />
