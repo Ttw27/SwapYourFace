@@ -33,6 +33,9 @@ export default function DoItForMePage() {
   // Back names: array of { size, index, name }
   const [backNames, setBackNames] = useState([]);
   const [hasBackPrint, setHasBackPrint] = useState(false);
+  const [specialShirt, setSpecialShirt] = useState(false);
+  const [specialShirtColour, setSpecialShirtColour] = useState('White');
+  const [specialShirtSize, setSpecialShirtSize] = useState('');
 
   useEffect(() => {
     if (templates.length === 0) fetchTemplates();
@@ -71,7 +74,8 @@ export default function DoItForMePage() {
 
   const backPrintPrice = pricing.back_print_price || 2.50;
   const pricePerShirt = getTierPrice(totalQty);
-  const subtotal = totalQty * pricePerShirt + (hasBackPrint ? totalQty * backPrintPrice : 0);
+  const filledBackNames = hasBackPrint ? backNames.filter(b => b.name.trim()).length : 0;
+  const subtotal = totalQty * pricePerShirt + filledBackNames * backPrintPrice;
 
   const handlePhotoChange = async (e) => {
     const file = e.target.files[0];
@@ -139,6 +143,7 @@ export default function DoItForMePage() {
           total_amount: subtotal,
           order_type: 'do_it_for_me',
           notes: form.notes,
+          special_shirt: specialShirt ? { colour: specialShirtColour, size: specialShirtSize } : null,
           gdpr_consent: true,
         })
       });
@@ -343,18 +348,71 @@ export default function DoItForMePage() {
                         </button>
                       </div>
                       {hasBackPrint && backNames.length > 0 && (
-                        <div className="space-y-2 max-h-48 overflow-y-auto pr-1">
+                        <div className="space-y-2 max-h-56 overflow-y-auto pr-1">
                           {backNames.map((b, i) => (
                             <div key={`${b.size}-${b.index}`} className="flex items-center gap-2">
                               <span className="text-xs font-bold text-gray-500 w-8 flex-shrink-0">{b.size}</span>
                               <Input
                                 value={b.name}
                                 onChange={e => updateBackName(b.size, b.index, e.target.value)}
-                                placeholder={`Back name for shirt ${i+1}`}
-                                className="text-sm h-8"
+                                placeholder="Leave blank for no back name"
+                                className="text-sm h-8 flex-1"
                               />
+                              {b.name.trim() ? (
+                                <span className="text-xs font-bold text-[#FF2E63] flex-shrink-0">+£{backPrintPrice.toFixed(2)}</span>
+                              ) : (
+                                <span className="text-xs text-gray-300 flex-shrink-0">no charge</span>
+                              )}
                             </div>
                           ))}
+                          {filledBackNames > 0 && (
+                            <div className="flex justify-between text-sm pt-2 border-t border-gray-100">
+                              <span className="text-gray-500">{filledBackNames} back name{filledBackNames!==1?'s':''}</span>
+                              <span className="font-bold text-[#FF2E63]">+£{(filledBackNames * backPrintPrice).toFixed(2)}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Special shirt colour */}
+                  {totalQty > 1 && (
+                    <div className="bg-white rounded-2xl p-5 shadow-sm border border-gray-100 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">ONE SPECIAL SHIRT</h2>
+                          <p className="text-xs text-gray-400">e.g. Groom/Bride shirt in a different colour</p>
+                        </div>
+                        <button onClick={() => setSpecialShirt(!specialShirt)}
+                          className={`relative inline-flex flex-shrink-0 w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none ${specialShirt?'bg-[#FF2E63]':'bg-gray-200'}`}>
+                          <span className={`inline-block w-5 h-5 mt-0.5 bg-white rounded-full shadow transform transition-transform duration-200 ${specialShirt?'translate-x-5':'translate-x-0.5'}`}/>
+                        </button>
+                      </div>
+                      {specialShirt && (
+                        <div className="space-y-3">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div>
+                              <Label className="text-sm">Special shirt colour</Label>
+                              <select value={specialShirtColour} onChange={e=>setSpecialShirtColour(e.target.value)}
+                                className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF2E63]/20 focus:border-[#FF2E63]">
+                                {['White','Black','Navy','Red','Royal Blue','Forest Green','Grey'].map(c=>(
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <Label className="text-sm">Which size?</Label>
+                              <select value={specialShirtSize} onChange={e=>setSpecialShirtSize(e.target.value)}
+                                className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF2E63]/20 focus:border-[#FF2E63]">
+                                <option value="">Select size</option>
+                                {SIZES.filter(s=>(sizes[s]||0)>0).map(s=>(
+                                  <option key={s} value={s}>{s}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <p className="text-xs text-gray-400">All other shirts will be the standard colour for this template. We'll confirm the exact colours available when we contact you about your proof.</p>
                         </div>
                       )}
                     </div>
@@ -397,6 +455,7 @@ export default function DoItForMePage() {
                     <p><strong className="text-[#252A34]">Phone:</strong> {form.phone}</p>
                     {form.title && <p><strong className="text-[#252A34]">Title:</strong> {form.title}</p>}
                     {form.subtitle && <p><strong className="text-[#252A34]">Subtitle:</strong> {form.subtitle}</p>}
+                    {specialShirt && specialShirtSize && <p><strong className="text-[#252A34]">Special shirt:</strong> {specialShirtColour} ({specialShirtSize})</p>}
                   </div>
                 </div>
                 {photoPreview && (
@@ -419,14 +478,14 @@ export default function DoItForMePage() {
                             </div>
                           )}
                         </div>
-                        <span className="text-gray-600">£{(pricePerShirt * (sizes[size]||0) + (hasBackPrint ? backPrintPrice * (sizes[size]||0) : 0)).toFixed(2)}</span>
+                        <span className="text-gray-600">£{(pricePerShirt * (sizes[size]||0)).toFixed(2)}</span>
                       </div>
                     );
                   })}
-                  {hasBackPrint && (
+                  {hasBackPrint && filledBackNames > 0 && (
                     <div className="flex justify-between text-sm text-gray-500">
-                      <span>Back print (×{totalQty})</span>
-                      <span>included above</span>
+                      <span>Back names (×{filledBackNames})</span>
+                      <span>+£{(filledBackNames * backPrintPrice).toFixed(2)}</span>
                     </div>
                   )}
                   <div className="flex justify-between font-bold text-lg pt-2 border-t border-gray-100">
