@@ -12,7 +12,7 @@ const faqs = [
     category: 'Ordering',
     items: [
       { q: "How does the t-shirt builder work?", a: "Choose a template, upload your photo (we auto-remove the background), add your custom text, select your sizes and pay. After payment we'll create a digital proof and send it for your approval before printing anything." },
-      { q: "Don't want to design it yourself?", a: "No problem at all! Just head to our Custom Order page and fill in a few details. We'll do the whole design for you, send a proof for approval and get it printed. You can also request a completely bespoke template if you don't see one you like." },
+      { q: "Don't want to design it yourself?", a: "No problem at all! Use our 'Do It For Me' service — fill in your details, upload your photo and we'll handle the whole design, send a proof for approval and get it printed. Or if you want something completely unique, check out our Bespoke Character service." },
       { q: "Can I create different designs for each person?", a: "Yes! Use our Multi-Design mode to create individual designs for each person in your group — each with their own face and back name." },
       { q: "How many shirts is the minimum order?", a: "There's no minimum — you can order just one shirt if you want! Though obviously the more you order the better value it is." },
     ]
@@ -22,9 +22,9 @@ const faqs = [
     items: [
       { q: "What photo should I upload?", a: "A clear photo where the face is front-on and well-lit works best. Headshots or selfies are ideal. Avoid photos where the face is at an angle, partially covered, or in poor lighting." },
       { q: "What if my photo doesn't cut out properly?", a: "Don't worry — every order is manually checked by our team before printing. If your photo doesn't cut out cleanly we'll fix it, or contact you if we need a better quality photo." },
-      { q: "Can I request a custom template?", a: "Absolutely! If you don't see a template you love, tell us your idea via our Custom Order page or WhatsApp and we'll create a bespoke template for you." },
+      { q: "Can I request a custom template?", a: "Absolutely! Visit our Bespoke Character page and tell us your idea — we can create completely unique illustrated characters from scratch, or modify existing templates with different skin tones, clothing or styling." },
       { q: "Can I add text to the back of the shirt?", a: "Yes — you can add a name to the back of each shirt for £2.50 per shirt. Great for adding names or numbers for a squad feel." },
-      { q: "Do your templates support different skin tones?", a: "Our templates are stylised illustrations currently shown in one style. The face cutout uses your actual photo so your skin tone is always accurate. If you'd like a template body that better suits your group, get in touch via our Custom Order service — we can create bespoke artwork tailored to you." },
+      { q: "Do your templates support different skin tones?", a: "Our templates are stylised illustrations currently shown in one style. The face cutout uses your actual photo so your skin tone is always accurate. If you'd like a template body that better suits your group, get in touch via our Bespoke Character service — we can create bespoke artwork tailored to you." },
     ]
   },
   {
@@ -104,9 +104,14 @@ export default function FAQPage() {
                 <MessageCircle className="w-4 h-4" /> WhatsApp Us
               </Button>
             </a>
-            <Link to="/custom-order">
+            <Link to="/do-it-for-me">
               <Button variant="outline" className="border-white text-white hover:bg-white hover:text-[#252A34] rounded-full px-8 py-3 font-bold uppercase tracking-wider w-full sm:w-auto">
-                Custom Order Service
+                Do It For Me
+              </Button>
+            </Link>
+            <Link to="/bespoke">
+              <Button variant="outline" className="border-[#FFE600] text-[#FFE600] hover:bg-[#FFE600]/10 rounded-full px-8 py-3 font-bold uppercase tracking-wider w-full sm:w-auto">
+                Bespoke Character
               </Button>
             </Link>
           </div>

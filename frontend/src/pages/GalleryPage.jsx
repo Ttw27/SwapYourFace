@@ -45,7 +45,7 @@ export default function GalleryPage() {
       <section className="bg-white py-10 border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12 text-center">
           <h1 className="font-['Anton'] text-4xl sm:text-5xl text-[#252A34] mb-3 tracking-wide">TEMPLATES</h1>
-          <p className="text-gray-500 mb-6">Choose your favourite — or <Link to="/custom-order" className="text-[#FF2E63] hover:underline">let us create one just for you</Link></p>
+          <p className="text-gray-500 mb-6">Choose your favourite — or <Link to="/do-it-for-me" className="text-[#FF2E63] hover:underline">let us design it for you</Link></p>
           {/* Search */}
           <div className="relative max-w-md mx-auto mb-6">
             <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
@@ -74,7 +74,7 @@ export default function GalleryPage() {
         <span className="text-lg flex-shrink-0">🎨</span>
         <p className="text-sm text-gray-600">
           Our templates are stylised illustrations — if you'd like a template that better suits your group's skin tones, head to our{' '}
-          <a href="/custom-order" className="text-[#FF2E63] font-medium hover:underline">Custom Order service</a>{' '}
+          <a href="/bespoke" className="text-[#FF2E63] font-medium hover:underline">Bespoke Character service</a>{' '}
           and we'll create something just for you.
         </p>
       </div>

@@ -7,7 +7,7 @@ import { ArrowRight, Shirt, Users, Upload, Sparkles, Star, CheckCircle, MessageC
 import SEOHead from '@/components/SEOHead';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
-const WHATSAPP = 'https://wa.me/447822032847?text=' + encodeURIComponent("Hi! I'd like a custom order 👋");
+const WHATSAPP = 'https://wa.me/447822032847?text=' + encodeURIComponent("Hi! I'd like to discuss a design 👋");
 
 export default function HomePage() {
   const { templates } = useStore();

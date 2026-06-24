@@ -585,7 +585,7 @@ export default function BuilderPage() {
                 { step: '1', title: 'Choose a Template', colour: '#FF2E63', tips: [
                   'Browse all templates or filter by Stag, Hen or Party',
                   'Click any template to select it — you\'ll see it appear in the preview',
-                  "Can't find one you like? Use our Custom Order service and we'll create one for you",
+                  "Can't find one you like? Try our Bespoke Character service — we'll create something unique just for you",
                 ]},
                 { step: '2', title: 'Upload a Photo', colour: '#08D9D6', tips: [
                   'Use a clear, front-facing photo — headshots and selfies work best',
@@ -760,7 +760,7 @@ export default function BuilderPage() {
                   <h3 className="font-['Anton'] text-lg text-[#252A34] mb-4 tracking-wide">2. UPLOAD A PHOTO</h3>
                   <div className="mb-4 p-3 bg-[#FFF9E6] border border-[#FFE600] rounded-xl flex items-start gap-2">
                     <span className="flex-shrink-0">🎨</span>
-                    <p className="text-xs text-gray-600">Our templates are stylised illustrations. If you'd like a template that better suits your group's skin tones, use our <a href="/custom-order" className="text-[#FF2E63] hover:underline font-medium">Custom Order service</a>.</p>
+                    <p className="text-xs text-gray-600">Our templates are stylised illustrations. If you'd like a template that better suits your group's skin tones, use our <a href="/bespoke" className="text-[#FF2E63] hover:underline font-medium">Bespoke Character service</a>.</p>
                   </div>
                   <div className="mb-6 p-4 bg-gray-50 rounded-xl">
                     <div className="flex items-start gap-3">
