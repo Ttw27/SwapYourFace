@@ -5,7 +5,7 @@ import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 
 const LOGO_ICON = '/logo192.png';
-const LOGO_TEXT = 'https://res.cloudinary.com/dqlrmqhte/image/upload/v1774533063/Swap_My_Face_Logo_Text_Transparent_imwzqc.png';
+const LOGO_TEXT = 'https://pub-ac6681582ccc439ca43cef357512c6bc.r2.dev/logos/Swap%20My%20Face%20Logo%20Text%20Transparent.png';
 
 export const Navbar = () => {
   const location = useLocation();
