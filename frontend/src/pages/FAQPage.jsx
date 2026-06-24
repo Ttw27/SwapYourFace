@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { ChevronDown, MessageCircle } from 'lucide-react';
+import SEOHead from '@/components/SEOHead';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 
@@ -66,6 +67,12 @@ const FAQItem = ({ q, a }) => {
 export default function FAQPage() {
   return (
     <div className="min-h-screen bg-[#F7F7F7]">
+      <SEOHead
+        title="FAQs — Custom Face T-Shirts"
+        description="Common questions about our custom face t-shirts — how it works, delivery times, returns policy and more."
+        keywords="custom t-shirt FAQ, face t-shirt questions, stag do t-shirt delivery"
+        url="/faq"
+      />
       <section className="bg-white py-12 border-b border-gray-100">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
           <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }}>

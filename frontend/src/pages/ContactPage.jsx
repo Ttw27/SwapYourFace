@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { Mail, Phone, MapPin, Clock, MessageCircle } from 'lucide-react';
+import SEOHead from '@/components/SEOHead';
 import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 
@@ -8,6 +9,12 @@ export default function ContactPage() {
 
   return (
     <div className="min-h-screen bg-[#F7F7F7]">
+      <SEOHead
+        title="Contact Us"
+        description="Get in touch with Swap My Face Tees. WhatsApp, email or visit us in Leicester. We respond within the hour during business hours."
+        keywords="contact swap my face tees, custom t-shirt enquiry, t-shirt help"
+        url="/contact"
+      />
       <section className="bg-white py-12 border-b border-gray-100">
         <div className="max-w-4xl mx-auto px-4 sm:px-6 text-center">
           <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }}>

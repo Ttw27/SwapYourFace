@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion';
 import { Truck, RotateCcw, Clock, CheckCircle, AlertCircle, Package } from 'lucide-react';
+import SEOHead from '@/components/SEOHead';
 import { Link } from 'react-router-dom';
 
 const Section = ({ icon: Icon, title, children }) => (
@@ -17,6 +18,12 @@ const Section = ({ icon: Icon, title, children }) => (
 export default function ShippingPage() {
   return (
     <div className="min-h-screen bg-[#F7F7F7]">
+      <SEOHead
+        title="Shipping & Returns"
+        description="Free UK standard delivery in 5-8 working days. Express delivery available for £8.99. Full returns policy for custom t-shirts."
+        keywords="custom t-shirt delivery UK, free t-shirt delivery, t-shirt returns policy"
+        url="/shipping"
+      />
       <section className="bg-white py-12 border-b border-gray-100">
         <div className="max-w-3xl mx-auto px-4 sm:px-6 text-center">
           <motion.div initial={{ opacity:0, y:20 }} animate={{ opacity:1, y:0 }}>

@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { useStore } from '@/store/useStore';
 import { ArrowRight, Shirt, Users, Upload, Sparkles, Star, CheckCircle, MessageCircle, Palette } from 'lucide-react';
+import SEOHead from '@/components/SEOHead';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const WHATSAPP = 'https://wa.me/447822032847?text=' + encodeURIComponent("Hi! I'd like a custom order 👋");
@@ -33,6 +34,12 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen">
+      <SEOHead
+        title="Custom Face T-Shirts for Stag & Hen Parties"
+        description="Create custom face t-shirts from £11.99. Upload your photo, choose a hilarious template and we handle everything. Free UK delivery. Perfect for stag dos, hen parties and birthdays."
+        keywords="custom face t-shirts UK, stag do t-shirts, hen party t-shirts, personalised face t-shirts, funny stag do shirts, custom photo t-shirts"
+        url="/"
+      />
       {/* Hero */}
       <section className="relative overflow-hidden bg-gradient-to-br from-[#FF2E63] via-[#c4003f] to-[#252A34] py-20 sm:py-28">
         <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'radial-gradient(circle at 20% 50%, #FFE600 0%, transparent 50%), radial-gradient(circle at 80% 20%, #FF2E63 0%, transparent 50%)' }} />
@@ -113,9 +120,14 @@ export default function HomePage() {
                     <MessageCircle className="w-4 h-4" /> WhatsApp Us
                   </Button>
                 </a>
-                <Link to="/custom-order">
+                <Link to="/do-it-for-me">
                   <Button variant="outline" className="border-white/30 text-white hover:bg-white/10 rounded-full px-8 py-3 font-bold uppercase tracking-wider">
-                    Custom Order Form
+                    Do It For Me
+                  </Button>
+                </Link>
+                <Link to="/bespoke">
+                  <Button variant="outline" className="border-[#FFE600]/50 text-[#FFE600] hover:bg-[#FFE600]/10 rounded-full px-8 py-3 font-bold uppercase tracking-wider">
+                    Bespoke Character
                   </Button>
                 </Link>
               </div>
@@ -264,9 +276,14 @@ export default function HomePage() {
                 Start Creating Now
               </Button>
             </Link>
-            <Link to="/custom-order">
+            <Link to="/do-it-for-me">
               <Button variant="outline" className="border-white text-white hover:bg-white/10 rounded-full px-10 py-4 text-lg font-bold uppercase tracking-wider">
-                Get Us To Design It
+                Do It For Me
+              </Button>
+            </Link>
+            <Link to="/bespoke">
+              <Button variant="outline" className="border-[#FFE600] text-[#FFE600] hover:bg-[#FFE600]/10 rounded-full px-10 py-4 text-lg font-bold uppercase tracking-wider">
+                Bespoke Character
               </Button>
             </Link>
           </div>

@@ -56,6 +56,8 @@ export default function AdminPage() {
   const [newCode, setNewCode] = useState({ code: '', percent_off: 10 });
   const [trackingConfig, setTrackingConfig] = useState({ google_tag_id: '', facebook_pixel_id: '', facebook_access_token: '' });
   const [savingTracking, setSavingTracking] = useState(false);
+  const [seoSettings, setSeoSettings] = useState({});
+  const [savingSEO, setSavingSEO] = useState(false);
   const [savingCode, setSavingCode] = useState(false);
   const [importingTemplates, setImportingTemplates] = useState(false);
   const [fixingUrls, setFixingUrls] = useState(false);
@@ -122,7 +124,7 @@ export default function AdminPage() {
   const [savingTemplate, setSavingTemplate] = useState(false);
 
   useEffect(() => {
-    if (authed) { fetchStats(); fetchOrders(); fetchTemplates(); fetchReviews(); fetchPricing(); fetchDiscountCodes(); fetchTrackingConfig(); }
+    if (authed) { fetchStats(); fetchOrders(); fetchTemplates(); fetchReviews(); fetchPricing(); fetchDiscountCodes(); fetchTrackingConfig(); fetchSEOSettings(); }
   }, [authed]);
 
   const handleLogin = () => {
@@ -275,6 +277,27 @@ export default function AdminPage() {
       const r = await fetch(`${API}/admin/tracking-config`);
       if (r.ok) setTrackingConfig(await r.json());
     } catch(e) {}
+  };
+
+  const fetchSEOSettings = async () => {
+    try {
+      const r = await fetch(`${API}/admin/seo-settings`);
+      if (r.ok) setSeoSettings(await r.json());
+    } catch(e) {}
+  };
+
+  const handleSaveSEO = async () => {
+    setSavingSEO(true);
+    try {
+      const r = await fetch(`${API}/admin/seo-settings`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(seoSettings)
+      });
+      if (!r.ok) throw new Error();
+      toast.success('SEO settings saved!');
+    } catch(e) { toast.error('Failed to save SEO settings'); }
+    finally { setSavingSEO(false); }
   };
 
   const handleSaveTracking = async () => {
@@ -831,6 +854,48 @@ export default function AdminPage() {
 
               <Button onClick={handleSavePricing} disabled={savingPricing} className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-8 py-3 font-bold uppercase tracking-wider">
                 {savingPricing ? 'Saving...' : 'Save Pricing'}
+              </Button>
+            </div>
+
+            {/* SEO Settings */}
+            <div className="bg-white rounded-2xl shadow-sm p-6 space-y-5">
+              <div>
+                <h2 className="font-['Anton'] text-lg text-[#252A34] tracking-wide">SEO SETTINGS</h2>
+                <p className="text-sm text-gray-500 mt-1">Edit page titles and descriptions to improve Google rankings. Changes take effect on next site deploy.</p>
+              </div>
+              {[
+                { key: 'home', label: 'Homepage' },
+                { key: 'gallery', label: 'Gallery / Templates' },
+                { key: 'bespoke', label: 'Bespoke Character' },
+                { key: 'faq', label: 'FAQ' },
+                { key: 'reviews', label: 'Reviews' },
+              ].map(page => (
+                <div key={page.key} className="p-4 bg-gray-50 rounded-xl space-y-3">
+                  <p className="font-bold text-sm text-[#252A34]">{page.label}</p>
+                  <div>
+                    <Label className="text-xs">Page Title</Label>
+                    <Input
+                      value={seoSettings[`${page.key}_title`] || ''}
+                      onChange={e => setSeoSettings(s => ({...s, [`${page.key}_title`]: e.target.value}))}
+                      placeholder={`e.g. Custom Face T-Shirts — ${page.label}`}
+                      className="mt-1 text-sm"
+                    />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Meta Description (150-160 chars)</Label>
+                    <textarea
+                      value={seoSettings[`${page.key}_desc`] || ''}
+                      onChange={e => setSeoSettings(s => ({...s, [`${page.key}_desc`]: e.target.value}))}
+                      placeholder="Brief description of this page for Google search results..."
+                      rows={2}
+                      className="mt-1 w-full border border-gray-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#FF2E63]/20 focus:border-[#FF2E63] resize-none"
+                    />
+                    <p className="text-xs text-gray-400 mt-0.5">{(seoSettings[`${page.key}_desc`] || '').length}/160 chars</p>
+                  </div>
+                </div>
+              ))}
+              <Button onClick={handleSaveSEO} disabled={savingSEO} className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full px-8 py-3 font-bold uppercase tracking-wider">
+                {savingSEO ? 'Saving...' : 'Save SEO Settings'}
               </Button>
             </div>
 

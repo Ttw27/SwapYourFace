@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Star, Upload, X, ZoomIn, ChevronLeft, ChevronRight } from 'lucide-react';
+import SEOHead from '@/components/SEOHead';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -169,6 +170,12 @@ export default function ReviewsPage() {
 
   return (
     <div className="min-h-screen bg-[#F7F7F7]">
+      <SEOHead
+        title="Customer Reviews — Real Stag & Hen Party Photos"
+        description="See what our customers say about our custom face t-shirts. Real reviews and photos from stag dos and hen parties across the UK."
+        keywords="custom t-shirt reviews UK, stag do t-shirt reviews, hen party t-shirt reviews"
+        url="/reviews"
+      />
       {lightbox && <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />}
       {showForm && <SubmitReviewForm onClose={()=>setShowForm(false)} onSubmitted={fetchReviews}/>}
 

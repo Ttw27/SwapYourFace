@@ -4,6 +4,7 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { useStore } from '@/store/useStore';
 import { Search } from 'lucide-react';
+import SEOHead from '@/components/SEOHead';
 
 export default function GalleryPage() {
   const { templates, fetchTemplates, templatesLoading } = useStore();
@@ -35,6 +36,12 @@ export default function GalleryPage() {
 
   return (
     <div className="min-h-screen bg-[#F7F7F7]">
+      <SEOHead
+        title="T-Shirt Templates — Stag Do & Hen Party Designs"
+        description="Browse 60+ hilarious t-shirt templates for stag dos, hen parties and birthdays. Custom face t-shirts from £11.99 with free UK delivery."
+        keywords="stag do t-shirt templates, hen party t-shirt designs, custom face t-shirt templates UK"
+        url="/gallery"
+      />
       <section className="bg-white py-10 border-b border-gray-100">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12 text-center">
           <h1 className="font-['Anton'] text-4xl sm:text-5xl text-[#252A34] mb-3 tracking-wide">TEMPLATES</h1>
