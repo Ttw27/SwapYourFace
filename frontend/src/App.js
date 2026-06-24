@@ -50,6 +50,7 @@ import ReviewsPage from "@/pages/ReviewsPage";
 import TermsPage from "@/pages/TermsPage";
 import CustomOrderPage from "@/pages/CustomOrderPage";
 import DoItForMePage from "@/pages/DoItForMePage";
+import BespokePage from "@/pages/BespokePage";
 
 // Components
 import Navbar from "@/components/Navbar";
@@ -90,6 +91,7 @@ export default function App() {
             <Route path="/terms" element={<TermsPage />} />
             <Route path="/custom-order" element={<CustomOrderPage />} />
             <Route path="/do-it-for-me" element={<DoItForMePage />} />
+            <Route path="/bespoke" element={<BespokePage />} />
           </Routes>
         </main>
         <Footer />
