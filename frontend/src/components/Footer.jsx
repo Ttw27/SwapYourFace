@@ -28,7 +28,8 @@ export const Footer = () => {
               {[
                 { to: '/gallery', label: 'Templates' },
                 { to: '/builder', label: 'Create Your Design' },
-                { to: '/custom-order', label: 'Custom Order Service' },
+                { to: '/do-it-for-me', label: 'Do It For Me' },
+                { to: '/bespoke', label: 'Bespoke Character' },
                 { to: '/reviews', label: 'Customer Reviews' },
                 { to: '/faq', label: 'FAQs' },
               ].map(l => (
