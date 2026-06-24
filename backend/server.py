@@ -979,6 +979,26 @@ async def validate_discount(data: dict):
         raise HTTPException(status_code=400, detail="This code is no longer active")
     return {"code": code, "percent_off": doc["percent_off"], "valid": True}
 
+# ============ SEO SETTINGS ============
+
+@api_router.get("/admin/seo-settings")
+async def get_seo_settings():
+    config = await db.config.find_one({"key": "seo"})
+    if not config:
+        return {}
+    config.pop('_id', None)
+    config.pop('key', None)
+    return config
+
+@api_router.patch("/admin/seo-settings")
+async def update_seo_settings(data: dict):
+    await db.config.update_one(
+        {"key": "seo"},
+        {"$set": {**data, "key": "seo"}},
+        upsert=True
+    )
+    return {"message": "SEO settings updated"}
+
 # ============ TRACKING & PIXELS ============
 
 @api_router.get("/tracking-config")
