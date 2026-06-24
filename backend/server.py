@@ -45,6 +45,39 @@ cloudinary.config(
     secure=True
 )
 
+# ── Cloudflare R2 config ──────────────────────────────────────────────────────
+R2_ENDPOINT    = os.environ.get('R2_ENDPOINT', 'https://afb36c15be27fe1c335a60a6a804b36a.r2.cloudflarestorage.com')
+R2_ACCESS_KEY  = os.environ.get('R2_ACCESS_KEY', '')
+R2_SECRET_KEY  = os.environ.get('R2_SECRET_KEY', '')
+R2_BUCKET      = os.environ.get('R2_BUCKET', 'swapmyface')
+R2_PUBLIC_URL  = os.environ.get('R2_PUBLIC_URL', 'https://pub-ac6681582ccc439ca43cef357512c6bc.r2.dev')
+
+def get_r2_client():
+    from botocore.config import Config as BotoConfig
+    return boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=R2_ACCESS_KEY,
+        aws_secret_access_key=R2_SECRET_KEY,
+        config=BotoConfig(signature_version='s3v4'),
+        region_name='auto',
+    )
+
+def upload_to_r2(contents: bytes, filename: str, content_type: str = 'image/png') -> str:
+    """Upload file to Cloudflare R2 and return public URL"""
+    try:
+        client = get_r2_client()
+        client.put_object(
+            Bucket=R2_BUCKET,
+            Key=filename,
+            Body=contents,
+            ContentType=content_type,
+        )
+        return f"{R2_PUBLIC_URL.rstrip('/')}/{filename}"
+    except Exception as e:
+        logger.error(f"R2 upload failed: {e}")
+        return None
+
 # Create directories for file storage
 UPLOAD_DIR = ROOT_DIR / "uploads"
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -1518,6 +1551,7 @@ async def admin_add_review(
         "created_at": datetime.now(timezone.utc).isoformat()
     }
     await db.reviews.insert_one(review)
+    review.pop('_id', None)
     return review
 
 # Include the router in the main app
