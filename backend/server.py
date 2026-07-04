@@ -1,1600 +1,4792 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, APIRouter, HTTPException, Request, Header, Depends, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
-from typing import List, Optional, Dict, Any
+from pydantic import BaseModel, Field, EmailStr
+from typing import List, Optional, Dict, Tuple, Any
 import uuid
-from datetime import datetime, timezone
-import base64
-import aiofiles
-import requests
-from PIL import Image
-import io
-import json
-import zipfile
-import shutil
-import stripe
-import cloudinary
-import cloudinary.uploader
-import boto3
-from botocore.config import Config as BotoConfig
-import resend
+from datetime import datetime, timezone, timedelta
+import bcrypt
+import jwt
 
-ROOT_DIR = Path(__file__).parent
-load_dotenv(ROOT_DIR / '.env')
+from services.stripe_checkout import (
+    create_checkout_session,
+    get_checkout_status,
+    construct_webhook_event,
+)
+import stripe as _stripe_sdk
 
-# MongoDB connection
-mongo_url = os.environ['MONGO_URL']
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ['DB_NAME']]
-
-# Stripe
-stripe.api_key = os.environ.get('STRIPE_SECRET_KEY', '')
-resend.api_key = os.environ.get('RESEND_API_KEY', '')
-
-# Cloudinary — for storing preview PNGs permanently
-cloudinary.config(
-    cloud_name=os.environ.get('CLOUDINARY_CLOUD_NAME', 'dqlrmqhte'),
-    api_key=os.environ.get('CLOUDINARY_API_KEY', ''),
-    api_secret=os.environ.get('CLOUDINARY_API_SECRET', ''),
-    secure=True
+# Shared runtime lives in deps.py — mongo client, api_router, auth deps,
+# integration key resolver. All router modules import from there so this
+# file can stay focused on catalogue seed data + startup handlers.
+from deps import (
+    ROOT_DIR, client, db,
+    STRIPE_API_KEY, STRIPE_WEBHOOK_SECRET, JWT_SECRET, JWT_ALGORITHM, ADMIN_EMAIL, ADMIN_PASSWORD,
+    _hash_password, _verify_password, _create_access_token,
+    get_current_admin, require_admin,
+    api_router, _get_integration_value,
 )
 
-# ── Cloudflare R2 config ──────────────────────────────────────────────────────
-R2_ENDPOINT    = os.environ.get('R2_ENDPOINT', 'https://afb36c15be27fe1c335a60a6a804b36a.r2.cloudflarestorage.com')
-R2_ACCESS_KEY  = os.environ.get('R2_ACCESS_KEY', '')
-R2_SECRET_KEY  = os.environ.get('R2_SECRET_KEY', '')
-R2_BUCKET      = os.environ.get('R2_BUCKET', 'swapmyface')
-R2_PUBLIC_URL  = os.environ.get('R2_PUBLIC_URL', 'https://pub-ac6681582ccc439ca43cef357512c6bc.r2.dev')
 
-def get_r2_client():
-    from botocore.config import Config as BotoConfig
-    return boto3.client(
-        's3',
-        endpoint_url=R2_ENDPOINT,
-        aws_access_key_id=R2_ACCESS_KEY,
-        aws_secret_access_key=R2_SECRET_KEY,
-        config=BotoConfig(signature_version='s3v4'),
-        region_name='auto',
-    )
-
-def upload_to_r2(contents: bytes, filename: str, content_type: str = 'image/png') -> str:
-    """Upload file to Cloudflare R2 and return public URL"""
-    try:
-        client = get_r2_client()
-        client.put_object(
-            Bucket=R2_BUCKET,
-            Key=filename,
-            Body=contents,
-            ContentType=content_type,
-        )
-        return f"{R2_PUBLIC_URL.rstrip('/')}/{filename}"
-    except Exception as e:
-        logger.error(f"R2 upload failed: {e}")
-        return None
-
-# Create directories for file storage
-UPLOAD_DIR = ROOT_DIR / "uploads"
-UPLOAD_DIR.mkdir(exist_ok=True)
-ORIGINALS_DIR = UPLOAD_DIR / "originals"
-ORIGINALS_DIR.mkdir(exist_ok=True)
-HEADS_DIR = UPLOAD_DIR / "heads"
-HEADS_DIR.mkdir(exist_ok=True)
-PRINTS_DIR = UPLOAD_DIR / "prints"
-PRINTS_DIR.mkdir(exist_ok=True)
-
-# Create the main app
-app = FastAPI(title="PartyTees API")
-
-# Create a router with the /api prefix
-api_router = APIRouter(prefix="/api")
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# ============ MODELS ============
-
-class Template(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
-    # categories is now a list to support crossover templates e.g. ["stag", "party"]
-    categories: List[str] = Field(default_factory=list)
-    # Keep category for backwards compatibility
-    category: str = "stag"
-    body_image_url: str       # Design PNG - blank body, no head, no text
-    product_image_url: str = "" # Product hero image - with sample head + text
-    head_placement: Dict[str, Any] = Field(default_factory=lambda: {"x": 0.5, "y": 0.22, "scale": 0.9, "rotation": 0})
-    text_fields: Dict[str, Any] = Field(default_factory=lambda: {
-        "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
-        "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
-    })
-    is_popular: bool = False
-    is_new: bool = True
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class TemplateCreate(BaseModel):
-    name: str
-    categories: List[str] = ["stag"]
-    category: Optional[str] = None
-    body_image_url: str
-    product_image_url: Optional[str] = ""
-    head_placement: Optional[Dict[str, Any]] = None
-    text_fields: Optional[Dict[str, Any]] = None
-    is_popular: Optional[bool] = False
-    is_new: Optional[bool] = True
-
-class HeadCutout(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    original_file_id: str
-    original_url: str
-    head_url: str
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-
-class CartItem(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    template_id: str
-    template_name: str
-    head_cutout_id: Optional[str] = None
-    title_text: str = ""
-    subtitle_text: str = ""
-    back_name: Optional[str] = None
-    back_number: Optional[str] = None
-    has_back_print: bool = False
-    size: str = "M"
-    quantity: int = 1
-    head_placement: Dict[str, Any] = Field(default_factory=lambda: {"x": 0.5, "y": 0.22, "scale": 0.9, "rotation": 0})
-    preview_url: Optional[str] = None
-    front_print_url: Optional[str] = None
-    back_print_url: Optional[str] = None
-    original_photo_url: Optional[str] = None
-    price: float = 19.99
-    back_price: float = 2.50
-
-class Order(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    order_number: str = Field(default_factory=lambda: f"PT-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}")
-    customer_email: str
-    customer_name: str
-    items: List[Dict[str, Any]]
-    total_amount: float
-    currency: str = "GBP"
-    status: str = "pending"
-    stripe_payment_intent_id: Optional[str] = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    gdpr_consent: bool = False
-
-class OrderCreate(BaseModel):
-    customer_email: str
-    customer_name: str
-    items: List[Dict[str, Any]]
-    gdpr_consent: bool
-
-class PaymentIntentCreate(BaseModel):
-    items: List[Dict[str, Any]]
-    customer_email: Optional[str] = None
-
-# ============ TEMPLATES ENDPOINTS ============
-
-@api_router.get("/")
-async def root():
-    return {"message": "PartyTees API is running", "version": "2.0.0"}
-
-@api_router.get("/templates")
-async def get_templates(category: Optional[str] = None, popular: Optional[bool] = None):
-    query = {}
-    if category:
-        # Match against the new categories list
-        query["categories"] = {"$in": [category.lower()]}
-    if popular is not None:
-        query["is_popular"] = popular
-    
-    templates = await db.templates.find(query, {"_id": 0}).to_list(100)
-    return templates
-
-@api_router.get("/templates/{template_id}")
-async def get_template(template_id: str):
-    template = await db.templates.find_one({"id": template_id}, {"_id": 0})
-    if not template:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return template
-
-@api_router.post("/templates")
-async def create_template(template: TemplateCreate):
-    categories = template.categories
-    if not categories and template.category:
-        categories = [template.category.lower()]
-
-    template_obj = Template(
-        name=template.name,
-        categories=categories,
-        category=categories[0] if categories else "stag",
-        body_image_url=template.body_image_url,
-        product_image_url=template.product_image_url or "",
-        head_placement=template.head_placement or {"x": 0.5, "y": 0.22, "scale": 0.9, "rotation": 0},
-        text_fields=template.text_fields or {
-            "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
-            "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
-        },
-        is_popular=template.is_popular,
-        is_new=template.is_new
-    )
-    
-    doc = template_obj.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
-    await db.templates.insert_one(doc)
-    return template_obj
-
-@api_router.delete("/templates/{template_id}")
-async def delete_template(template_id: str):
-    result = await db.templates.delete_one({"id": template_id})
-    if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Template not found")
-    return {"message": "Template deleted", "id": template_id}
-
-@api_router.post("/templates/seed")
-async def seed_templates():
-    """Seed default templates from Cloudinary"""
-    default_templates = [
-        {
-            "id": "hip-hop-king",
-            "name": "Hip Hop King",
-            "categories": ["stag", "party"],
-            "category": "stag",
-            "body_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773762298/HipHopKingDESIGN-Stag-6_zs17oa.png",
-            "product_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773762289/HipHipKing-Stag-6_qsbgsw.jpg",
-            "head_placement": {"x": 0.5, "y": 0.22, "scale": 0.9, "rotation": 0},
-            "text_fields": {
-                "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
-                "subtitle": {"font": "Anton", "size": 32, "color": "#FFD700", "outline": "#000000"}
-            },
-            "is_popular": True,
-            "is_new": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": "bodybuilder",
-            "name": "Bodybuilder",
-            "categories": ["stag", "party"],
-            "category": "stag",
-            "body_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763080/BodybuilderDESIGN-Stag-16_xr0gyt.png",
-            "product_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763096/BodyBuilder-Stag-16_swgojr.jpg",
-            "head_placement": {"x": 0.5, "y": 0.22, "scale": 0.9, "rotation": 0},
-            "text_fields": {
-                "title": {"font": "Anton", "size": 48, "color": "#FFFFFF", "outline": "#000000"},
-                "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
-            },
-            "is_popular": True,
-            "is_new": False,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": "superhero-stag",
-            "name": "Superhero Stag",
-            "categories": ["stag"],
-            "category": "stag",
-            "body_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763083/SuperheroDESIGN-Stag-2_ejhssm.png",
-            "product_image_url": "https://res.cloudinary.com/dqlrmqhte/image/upload/v1773763095/Superhero-Stag-2_k24w6h.jpg",
-            "head_placement": {"x": 0.5, "y": 0.22, "scale": 0.9, "rotation": 0},
-            "text_fields": {
-                "title": {"font": "Anton", "size": 48, "color": "#FFD700", "outline": "#000000"},
-                "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
-            },
-            "is_popular": False,
-            "is_new": True,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-    ]
-    
-    await db.templates.delete_many({})
-    await db.templates.insert_many(default_templates)
-    
-    return {"message": "Templates seeded successfully", "count": len(default_templates)}
-
-# ============ IMAGE UPLOAD & HEAD CUTOUT ============
-
-@api_router.post("/upload/photo")
-async def upload_photo(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="File must be an image")
-    
-    file_id = str(uuid.uuid4())
-    content = await file.read()
-    
-    if len(content) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="File too large. Maximum size is 10MB")
-    
-    ext = file.filename.split(".")[-1] if "." in file.filename else "jpg"
-    original_path = ORIGINALS_DIR / f"{file_id}.{ext}"
-    
-    async with aiofiles.open(original_path, "wb") as f:
-        await f.write(content)
-    
-    try:
-        img = Image.open(io.BytesIO(content))
-        width, height = img.size
-        quality_warning = None
-        if width < 500 or height < 500:
-            quality_warning = "Image resolution is low. For best print quality, use images at least 500x500 pixels."
-    except Exception as e:
-        logger.error(f"Error reading image: {e}")
-        raise HTTPException(status_code=400, detail="Invalid image file")
-    
-    photo_doc = {
-        "id": file_id,
-        "original_filename": file.filename,
-        "original_path": str(original_path),
-        "original_url": f"/api/files/originals/{file_id}.{ext}",
-        "width": width,
-        "height": height,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.photos.insert_one(photo_doc)
-    
-    return {
-        "id": file_id,
-        "original_url": f"/api/files/originals/{file_id}.{ext}",
-        "width": width,
-        "height": height,
-        "quality_warning": quality_warning
-    }
-
-@api_router.post("/upload/remove-background")
-async def remove_background(
-    file_id: str = Form(...),
-    use_manual_crop: bool = Form(False),
-    crop_x: float = Form(0),
-    crop_y: float = Form(0),
-    crop_width: float = Form(1),
-    crop_height: float = Form(1)
-):
-    photo = await db.photos.find_one({"id": file_id}, {"_id": 0})
-    if not photo:
-        raise HTTPException(status_code=404, detail="Photo not found")
-    
-    original_path = Path(photo["original_path"])
-    if not original_path.exists():
-        raise HTTPException(status_code=404, detail="Original file not found")
-    
-    async with aiofiles.open(original_path, "rb") as f:
-        image_data = await f.read()
-    
-    head_id = str(uuid.uuid4())
-    head_path = HEADS_DIR / f"{head_id}.png"
-    
-    if use_manual_crop:
-        try:
-            img = Image.open(io.BytesIO(image_data))
-            width, height = img.size
-            left = int(crop_x * width)
-            top = int(crop_y * height)
-            right = int((crop_x + crop_width) * width)
-            bottom = int((crop_y + crop_height) * height)
-            cropped = img.crop((left, top, right, bottom))
-            if cropped.mode != "RGBA":
-                cropped = cropped.convert("RGBA")
-            cropped.save(head_path, "PNG")
-        except Exception as e:
-            logger.error(f"Error cropping image: {e}")
-            raise HTTPException(status_code=500, detail="Error processing image")
-    else:
-        # Try cutout.pro face cutout first (mattingType=3 = face + hair only)
-        cutout_pro_key = os.environ.get("CUTOUT_PRO_API_KEY")
-        # Fallback: remove.bg whole background removal
-        remove_bg_key = os.environ.get("REMOVE_BG_API_KEY")
-
-        if cutout_pro_key:
-            try:
-                logger.info("Using cutout.pro face cutout API")
-                response = requests.post(
-                    "https://www.cutout.pro/api/v1/matting?mattingType=3",
-                    files={"file": ("photo.jpg", image_data, "image/jpeg")},
-                    headers={"APIKEY": cutout_pro_key}
-                )
-                if response.status_code == 200:
-                    # Auto-crop transparent pixels so bounding box hugs the face tightly
-                    cutout_img = Image.open(io.BytesIO(response.content)).convert("RGBA")
-                    bbox = cutout_img.getbbox()  # returns (left, top, right, bottom) of non-transparent area
-                    if bbox:
-                        cutout_img = cutout_img.crop(bbox)
-                    cutout_img.save(head_path, "PNG")
-                    logger.info(f"cutout.pro face cutout successful, cropped to {cutout_img.size}")
-                else:
-                    logger.warning(f"cutout.pro API failed: {response.status_code} — {response.text}")
-                    img = Image.open(io.BytesIO(image_data)).convert("RGBA")
-                    img.save(head_path, "PNG")
-            except Exception as e:
-                logger.error(f"cutout.pro error: {e}")
-                img = Image.open(io.BytesIO(image_data)).convert("RGBA")
-                img.save(head_path, "PNG")
-
-        elif remove_bg_key:
-            try:
-                logger.info("Using remove.bg API (fallback)")
-                response = requests.post(
-                    "https://api.remove.bg/v1.0/removebg",
-                    files={"image_file": image_data},
-                    data={"size": "auto"},
-                    headers={"X-Api-Key": remove_bg_key}
-                )
-                if response.status_code == 200:
-                    cutout_img = Image.open(io.BytesIO(response.content)).convert("RGBA")
-                    bbox = cutout_img.getbbox()
-                    if bbox:
-                        cutout_img = cutout_img.crop(bbox)
-                    cutout_img.save(head_path, "PNG")
-                else:
-                    logger.warning(f"remove.bg API failed: {response.status_code}")
-                    img = Image.open(io.BytesIO(image_data)).convert("RGBA")
-                    img.save(head_path, "PNG")
-            except Exception as e:
-                logger.error(f"remove.bg error: {e}")
-                img = Image.open(io.BytesIO(image_data)).convert("RGBA")
-                img.save(head_path, "PNG")
-
-        else:
-            logger.info("No API key found — using original image without cutout")
-            img = Image.open(io.BytesIO(image_data))
-            if img.mode != "RGBA":
-                img = img.convert("RGBA")
-            img.save(head_path, "PNG")
-    
-    head_doc = {
-        "id": head_id,
-        "original_file_id": file_id,
-        "original_url": photo["original_url"],
-        "head_url": f"/api/files/heads/{head_id}.png",
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.head_cutouts.insert_one(head_doc)
-    
-    return {
-        "id": head_id,
-        "original_file_id": file_id,
-        "original_url": photo["original_url"],
-        "head_url": f"/api/files/heads/{head_id}.png"
-    }
-
-@api_router.post("/upload/preview")
-async def upload_preview(file: UploadFile = File(...)):
-    """
-    Accepts the flattened canvas PNG from the browser (full composite design)
-    and uploads it to Cloudinary for permanent storage.
-    Returns a public Cloudinary URL saved against the order.
-    """
-    preview_id = str(uuid.uuid4())
-    image_data = await file.read()
-
-    # Upload preview to R2
-    if R2_ACCESS_KEY:
-        try:
-            r2_key = f"previews/{preview_id}.png"
-            preview_url = upload_to_r2(image_data, r2_key, "image/png")
-            if preview_url:
-                logger.info(f"Preview uploaded to R2: {preview_url}")
-                return {"preview_url": preview_url, "id": preview_id, "storage": "r2"}
-        except Exception as e:
-            logger.warning(f"Cloudinary upload failed, falling back to local: {e}")
-
-    # Fallback: save locally (note: resets on Railway redeploy)
-    preview_path = PRINTS_DIR / f"{preview_id}.png"
-    try:
-        # Validate it's a real image
-        img = Image.open(io.BytesIO(image_data))
-        img.save(preview_path, "PNG")
-        preview_url = f"/api/files/prints/{preview_id}.png"
-        logger.info(f"Preview saved locally: {preview_url}")
-        return {"preview_url": preview_url, "id": preview_id, "storage": "local"}
-    except Exception as e:
-        logger.error(f"Preview save failed: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save preview")
-
-# ============ FILE SERVING ============
-
-@api_router.get("/files/originals/{filename}")
-async def get_original_file(filename: str):
-    file_path = ORIGINALS_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, headers={"Access-Control-Allow-Origin": "*"})
-
-@api_router.get("/files/heads/{filename}")
-async def get_head_file(filename: str):
-    file_path = HEADS_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, headers={"Access-Control-Allow-Origin": "*"})
-
-@api_router.get("/files/prints/{filename}")
-async def get_print_file(filename: str):
-    file_path = PRINTS_DIR / filename
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(file_path, headers={"Access-Control-Allow-Origin": "*"})
-
-# ============ STRIPE PAYMENTS ============
-
-@api_router.post("/payments/create-intent")
-async def create_payment_intent(data: PaymentIntentCreate):
-    """Create a Stripe PaymentIntent for the cart items"""
-    if not stripe.api_key:
-        raise HTTPException(status_code=500, detail="Stripe not configured")
-    
-    # Calculate total in pence (Stripe uses smallest currency unit)
-    total_pence = 0
-    for item in data.items:
-        base_price = item.get("price", 19.99)
-        quantity = item.get("quantity", 1)
-        has_back = item.get("hasBackPrint", False)
-        back_price = item.get("backPrice", 2.50) if has_back else 0
-        total_pence += int((base_price + back_price) * quantity * 100)
-    
-    if total_pence < 30:  # Stripe minimum
-        raise HTTPException(status_code=400, detail="Order total too low")
-    
-    try:
-        intent = stripe.PaymentIntent.create(
-            amount=total_pence,
-            currency="gbp",
-            payment_method_types=["card", "paypal"],
-            metadata={
-                "customer_email": data.customer_email or "",
-                "item_count": str(len(data.items))
-            }
-        )
-        return {
-            "client_secret": intent.client_secret,
-            "amount": total_pence,
-            "currency": "gbp"
-        }
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-@api_router.post("/payments/webhook")
-async def stripe_webhook(request_body: bytes = None):
-    """Handle Stripe webhook events"""
-    return {"status": "ok"}
-
-@api_router.post("/payments/create-checkout")
-async def create_checkout_session(data: dict):
-    """Create a Stripe hosted Checkout Session"""
-    if not stripe.api_key:
-        raise HTTPException(status_code=500, detail="Stripe not configured")
-
-    items = data.get("items", [])
-    order_id = data.get("order_id", "")
-    customer_email = data.get("customer_email", "")
-    success_url = data.get("success_url", "")
-    cancel_url = data.get("cancel_url", "")
-
-    # Get tier pricing
-    tiers, back_print_price_config = await get_pricing_config()
-    total_qty = sum(item.get("quantity", 1) for item in items)
-    tier_price = get_tier_price(tiers, total_qty)
-
-    line_items = []
-    for item in items:
-        # Use tier price (passed from frontend) or recalculate
-        base_price = item.get("price", tier_price)
-        has_back = item.get("hasBackPrint", False)
-        back_price = item.get("backPrice", back_print_price_config) if has_back else 0
-        unit_amount = int((base_price + back_price) * 100)
-        name = item.get("templateName", "Custom T-Shirt")
-        size = item.get("size", "")
-        line_items.append({
-            "price_data": {
-                "currency": "gbp",
-                "product_data": {"name": name, "description": f"Size: {size}" if size else ""},
-                "unit_amount": unit_amount,
-            },
-            "quantity": item.get("quantity", 1),
-        })
-
-    # Add shipping as a line item if express
-    shipping_cost = data.get("shipping_cost", 0)
-    shipping_method = data.get("shipping_method", "standard")
-    if shipping_cost and shipping_cost > 0:
-        line_items.append({
-            "price_data": {
-                "currency": "gbp",
-                "product_data": {"name": f"{'Express' if shipping_method == 'express' else 'Standard'} Delivery", "description": "3–5 working days" if shipping_method == "express" else "5–8 working days"},
-                "unit_amount": int(shipping_cost * 100),
-            },
-            "quantity": 1,
-        })
-
-    # Apply discount code as negative line item
-    discount_code = data.get("discount_code", "").upper().strip()
-    discount_percent = 0
-    if discount_code:
-        doc = await db.discount_codes.find_one({"code": discount_code, "active": True})
-        if doc:
-            discount_percent = doc.get("percent_off", 0)
-            # Calculate subtotal (items only, not shipping)
-            items_total = sum(
-                int((item.get("price", 19.99) + (item.get("backPrice", 2.50) if item.get("hasBackPrint") else 0)) * item.get("quantity", 1) * 100)
-                for item in items
-            )
-            discount_amount = int(items_total * discount_percent / 100)
-            if discount_amount > 0:
-                line_items.append({
-                    "price_data": {
-                        "currency": "gbp",
-                        "product_data": {"name": f"Discount ({discount_code} — {discount_percent}% off)"},
-                        "unit_amount": -discount_amount,
-                    },
-                    "quantity": 1,
-                })
-            # Increment usage count
-            await db.discount_codes.update_one({"code": discount_code}, {"$inc": {"uses": 1}})
-
-    if not line_items:
-        raise HTTPException(status_code=400, detail="No items")
-
-    try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=line_items,
-            mode="payment",
-            customer_email=customer_email or None,
-            success_url=success_url + "?session_id={CHECKOUT_SESSION_ID}",
-            cancel_url=cancel_url,
-            metadata={"order_id": order_id},
-        )
-        return {"checkout_url": session.url, "session_id": session.id}
-    except stripe.error.StripeError as e:
-        logger.error(f"Stripe checkout error: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-# ============ EMAIL NOTIFICATIONS ============
-
-async def send_order_notification(order: dict):
-    """Send new order notification email via Resend"""
-    if not resend.api_key:
-        logger.warning("RESEND_API_KEY not set — skipping email notification")
-        return
-    try:
-        items = order.get("items", [])
-        item_rows = ""
-        for i, item in enumerate(items):
-            back = f" + back name: {item.get('backName','')}" if item.get('hasBackPrint') else ""
-            item_rows += f"""
-            <tr style="border-bottom:1px solid #eee;">
-              <td style="padding:8px 12px;">{i+1}</td>
-              <td style="padding:8px 12px;">{item.get('templateName','')}</td>
-              <td style="padding:8px 12px;">{item.get('shirtType','').capitalize()} {item.get('size','')}</td>
-              <td style="padding:8px 12px;">{item.get('titleText','')} {item.get('subtitleText','')}</td>
-              <td style="padding:8px 12px;">£{(item.get('price', 0) + (item.get('backPrice',0) if item.get('hasBackPrint') else 0)):.2f}{back}</td>
-            </tr>"""
-
-        html = f"""
-        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-          <div style="background:#FF2E63;padding:24px;border-radius:12px 12px 0 0;">
-            <h1 style="color:white;margin:0;font-size:24px;">🎉 New Order Received!</h1>
-            <p style="color:rgba(255,255,255,0.9);margin:4px 0 0;">Swap My Face Tees</p>
-          </div>
-          <div style="background:#f9f9f9;padding:24px;border-radius:0 0 12px 12px;border:1px solid #eee;">
-
-            <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
-              <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">📋 Order Details</h2>
-              <p style="margin:4px 0;"><strong>Order:</strong> {order.get('order_number','')}</p>
-              <p style="margin:4px 0;"><strong>Total:</strong> £{order.get('total_amount',0):.2f}</p>
-              <p style="margin:4px 0;"><strong>Date:</strong> {order.get('created_at','')[:19].replace('T',' ')}</p>
-            </div>
-
-            <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
-              <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">👤 Customer</h2>
-              <p style="margin:4px 0;"><strong>Name:</strong> {order.get('customer_name','')}</p>
-              <p style="margin:4px 0;"><strong>Email:</strong> <a href="mailto:{order.get('customer_email','')}">{order.get('customer_email','')}</a></p>
-              <p style="margin:4px 0;"><strong>Phone:</strong> <a href="tel:{order.get('customer_phone','')}">{order.get('customer_phone','')}</a></p>
-            </div>
-
-            <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
-              <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">👕 Items ({len(items)} shirt{'s' if len(items)!=1 else ''})</h2>
-              <table style="width:100%;border-collapse:collapse;font-size:13px;">
-                <thead>
-                  <tr style="background:#f5f5f5;">
-                    <th style="padding:8px 12px;text-align:left;">#</th>
-                    <th style="padding:8px 12px;text-align:left;">Template</th>
-                    <th style="padding:8px 12px;text-align:left;">Size</th>
-                    <th style="padding:8px 12px;text-align:left;">Text</th>
-                    <th style="padding:8px 12px;text-align:left;">Price</th>
-                  </tr>
-                </thead>
-                <tbody>{item_rows}</tbody>
-              </table>
-            </div>
-
-            <div style="text-align:center;padding:16px;">
-              <a href="https://www.swapmyface.co.uk/admin" 
-                 style="background:#FF2E63;color:white;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:bold;font-size:14px;display:inline-block;">
-                View in Admin Panel →
-              </a>
-            </div>
-          </div>
-        </div>"""
-
-        resend.Emails.send({
-            "from": "Swap My Face Tees <orders@swapmyface.co.uk>",
-            "to": ["support@swapmyface.co.uk"],
-            "subject": f"🎉 New Order #{order.get('order_number','')} — £{order.get('total_amount',0):.2f}",
-            "html": html,
-        })
-        logger.info(f"Order notification email sent for {order.get('order_number','')}")
-    except Exception as e:
-        logger.error(f"Failed to send order notification: {e}")
-
-# ============ CART & ORDERS ============
-
-@api_router.post("/orders")
-async def create_order(order_data: OrderCreate):
-    if not order_data.gdpr_consent:
-        raise HTTPException(status_code=400, detail="GDPR consent is required")
-    
-    total = 0.0
-    for item in order_data.items:
-        base_price = item.get("price", 19.99)
-        quantity = item.get("quantity", 1)
-        has_back = item.get("has_back_print", False)
-        back_price = item.get("back_price", 2.50) if has_back else 0
-        total += (base_price + back_price) * quantity
-    
-    order = Order(
-        customer_email=order_data.customer_email,
-        customer_name=order_data.customer_name,
-        items=order_data.items,
-        total_amount=total,
-        gdpr_consent=order_data.gdpr_consent
-    )
-    
-    doc = order.model_dump()
-    doc['created_at'] = doc['created_at'].isoformat()
-    await db.orders.insert_one(doc)
-
-    # Send email notification in background (don't block the response)
-    try:
-        import asyncio
-        asyncio.create_task(send_order_notification(order))
-        asyncio.create_task(send_facebook_purchase_event(order))
-    except Exception as e:
-        logger.error(f"Could not schedule notifications: {e}")
-
-    return order
-
-@api_router.get("/orders")
-async def get_orders(status: Optional[str] = None):
-    query = {}
-    if status:
-        query["status"] = status
-    orders = await db.orders.find(query, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    for order in orders:
-        if isinstance(order['created_at'], str):
-            order['created_at'] = datetime.fromisoformat(order['created_at'])
-    return orders
-
-@api_router.get("/orders/{order_id}")
-async def get_order(order_id: str):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return order
-
-@api_router.patch("/orders/{order_id}/status")
-async def update_order_status(order_id: str, status: str):
-    valid_statuses = ["pending", "processing", "completed", "shipped"]
-    if status not in valid_statuses:
-        raise HTTPException(status_code=400, detail=f"Invalid status. Must be one of: {valid_statuses}")
-    result = await db.orders.update_one({"id": order_id}, {"$set": {"status": status}})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Order not found")
-    return {"message": "Status updated", "status": status}
-
-@api_router.get("/orders/{order_id}/download")
-async def download_order_files(order_id: str):
-    order = await db.orders.find_one({"id": order_id}, {"_id": 0})
-    if not order:
-        raise HTTPException(status_code=404, detail="Order not found")
-
-    zip_filename = f"order_{order.get('order_number', order_id)}.zip"
-    zip_path = UPLOAD_DIR / zip_filename
-
-    def fetch_url(url, timeout=10):
-        try:
-            resp = requests.get(url, timeout=timeout)
-            return resp.content if resp.status_code == 200 else None
-        except Exception as e:
-            logger.error(f"Fetch failed {url}: {e}")
-            return None
-
-    try:
-        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            # Human-readable summary
-            lines = [
-                f"ORDER: {order.get('order_number', order_id)}",
-                f"Customer: {order.get('customer_name', '')}",
-                f"Email: {order.get('customer_email', '')}",
-                f"Phone: {order.get('customer_phone', '')}",
-                f"Status: {order.get('status', '')}",
-                f"Total: £{order.get('total_amount', 0):.2f}",
-                f"Date: {order.get('created_at', '')}",
-                "", "ITEMS:",
-            ]
-            for idx, item in enumerate(order.get("items", [])):
-                lines += [
-                    f"", f"  Person {idx+1}:",
-                    f"    Template: {item.get('templateName', '')}",
-                    f"    Size: {item.get('size', '')} ({item.get('shirtType', '')})",
-                    f"    Title: {item.get('titleText', '')}",
-                    f"    Subtitle: {item.get('subtitleText', '')}",
-                    f"    Back Print: {'Yes - ' + item.get('backName','') if item.get('hasBackPrint') else 'No'}",
-                    f"    Face URL: {item.get('headUrl') or item.get('head_url') or 'N/A'}",
-                    f"    Original: {item.get('originalPhotoUrl') or item.get('original_photo_url') or 'N/A'}",
-                ]
-            zipf.writestr("order_summary.txt", "\n".join(lines))
-            zipf.writestr("order_details.json", json.dumps(order, indent=2, default=str))
-
-            for idx, item in enumerate(order.get("items", [])):
-                p = f"Person{idx+1:02d}"
-
-                # Face PNG - Cloudinary or local
-                head_url = item.get("headUrl") or item.get("head_url", "")
-                if head_url:
-                    if head_url.startswith("http"):
-                        data = fetch_url(head_url)
-                        if data: zipf.writestr(f"{p}_Face.png", data)
-                    elif head_url.startswith("/api/files/heads/"):
-                        filename = head_url.split("/")[-1]
-                        local = HEADS_DIR / filename
-                        if local.exists():
-                            zipf.write(local, f"{p}_Face.png")
-
-                # Original photo
-                orig = item.get("originalPhotoUrl") or item.get("original_photo_url", "")
-                if orig and orig.startswith("http"):
-                    data = fetch_url(orig)
-                    if data:
-                        ext = orig.split(".")[-1].split("?")[0][:4] or "jpg"
-                        zipf.writestr(f"{p}_OriginalPhoto.{ext}", data)
-
-                # Preview
-                preview = item.get("previewUrl", "")
-                if preview and preview.startswith("http"):
-                    data = fetch_url(preview)
-                    if data: zipf.writestr(f"{p}_Preview.jpg", data)
-
-        return FileResponse(zip_path, filename=zip_filename, media_type="application/zip",
-                           headers={"Content-Disposition": f"attachment; filename={zip_filename}"})
-    except Exception as e:
-        logger.error(f"Error creating zip: {e}")
-        raise HTTPException(status_code=500, detail=f"Error creating download: {str(e)}")
-
-# ============ PRICING ============
-
-DEFAULT_TIERS = [
-    {"min_qty": 1,  "max_qty": 1,    "price": 17.99, "label": "1 shirt"},
-    {"min_qty": 2,  "max_qty": 6,    "price": 15.99, "label": "2–6 shirts"},
-    {"min_qty": 7,  "max_qty": 12,   "price": 13.99, "label": "7–12 shirts"},
-    {"min_qty": 13, "max_qty": 20,   "price": 12.99, "label": "13–20 shirts"},
-    {"min_qty": 21, "max_qty": 9999, "price": 11.99, "label": "21+ shirts"},
+app = FastAPI()
+
+# ---------- Server-side product catalogue (prices NEVER taken from frontend) ----------
+PRODUCTS: Dict[str, Dict] = {
+    "personalised-tee": {
+        "id": "personalised-tee",
+        "name": "Personalised T-Shirt",
+        "price": 6.99,
+        "category": "best-sellers",
+        "image": "https://images.pexels.com/photos/9558716/pexels-photo-9558716.jpeg",
+        "description": "Gildan SoftStyle 100% cotton. Upload your photo, logo or text.",
+    },
+    "personalised-hoodie": {
+        "id": "personalised-hoodie",
+        "name": "Personalised Hoodie",
+        "price": 14.99,
+        "category": "best-sellers",
+        "image": "https://images.pexels.com/photos/8217544/pexels-photo-8217544.jpeg",
+        "description": "Gildan Heavy Blend Hooded Sweatshirt. Free logo print included.",
+    },
+    "kids-tee": {
+        "id": "kids-tee",
+        "name": "Kids T-Shirt",
+        "price": 7.99,
+        "category": "best-sellers",
+        "image": "https://images.pexels.com/photos/31977041/pexels-photo-31977041.jpeg",
+        "description": "Soft Gildan Youth tee. Perfect for schools, leavers & teams.",
+    },
+    "polo-shirt": {
+        "id": "polo-shirt",
+        "name": "Pique Polo Shirt",
+        "price": 8.99,
+        "category": "best-sellers",
+        "image": "https://images.pexels.com/photos/26063373/pexels-photo-26063373.jpeg",
+        "description": "Pro RTX Pique Polo. Breast print included in price.",
+    },
+    "workwear-jacket": {
+        "id": "workwear-jacket",
+        "name": "Workwear Softshell Jacket",
+        "price": 24.99,
+        "category": "workwear",
+        "image": "https://images.pexels.com/photos/8821005/pexels-photo-8821005.jpeg",
+        "description": "Durable softshell with chest logo print, UK stock.",
+    },
+    "hi-vis-vest": {
+        "id": "hi-vis-vest",
+        "name": "Hi-Vis Vest",
+        "price": 9.99,
+        "category": "workwear",
+        "image": "https://images.pexels.com/photos/34859873/pexels-photo-34859873.jpeg",
+        "description": "EN ISO 20471 compliant. Custom print or embroidery.",
+    },
+    "workwear-tshirt": {
+        "id": "workwear-tshirt",
+        "name": "Heavy Cotton Workwear Tee",
+        "price": 7.49,
+        "category": "workwear",
+        "image": "https://images.pexels.com/photos/9558716/pexels-photo-9558716.jpeg",
+        "description": "Built for the trades. Breast logo print included.",
+    },
+    "workwear-sweatshirt": {
+        "id": "workwear-sweatshirt",
+        "name": "Crewneck Sweatshirt",
+        "price": 12.99,
+        "category": "workwear",
+        "image": "https://images.pexels.com/photos/8217544/pexels-photo-8217544.jpeg",
+        "description": "Warm crewneck for site days. Add your brand for free.",
+    },
+    "school-hoodie": {
+        "id": "school-hoodie",
+        "name": "Leavers Hoodie",
+        "price": 16.99,
+        "category": "teams-schools",
+        "image": "https://images.pexels.com/photos/8926904/pexels-photo-8926904.jpeg",
+        "description": "Class-of-XXXX leavers hoodie. Names on the back included.",
+    },
+    "team-polo": {
+        "id": "team-polo",
+        "name": "Team Pique Polo",
+        "price": 9.99,
+        "category": "teams-schools",
+        "image": "https://images.pexels.com/photos/26063373/pexels-photo-26063373.jpeg",
+        "description": "Match-day polo with crest and initials.",
+    },
+    "dance-tee": {
+        "id": "dance-tee",
+        "name": "Dance & Theatre Tee",
+        "price": 7.99,
+        "category": "teams-schools",
+        "image": "https://images.pexels.com/photos/4250534/pexels-photo-4250534.jpeg",
+        "description": "Soft drape tee for dance schools & theatre groups.",
+    },
+    "sports-tee": {
+        "id": "sports-tee",
+        "name": "Cool Sports Tee",
+        "price": 8.49,
+        "category": "teams-schools",
+        "image": "https://images.pexels.com/photos/12097160/pexels-photo-12097160.jpeg",
+        "description": "Performance fabric tee, club crest included.",
+    },
+
+    # ----- Sports & Combat -----
+    "football-jersey": {
+        "id": "football-jersey",
+        "name": "Football Match Jersey",
+        "price": 18.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/47730/the-ball-stadion-football-the-pitch-47730.jpeg",
+        "description": "Performance match jersey. Club crest, sponsor, names & numbers — match-day ready.",
+    },
+    "football-shorts": {
+        "id": "football-shorts",
+        "name": "Football Shorts",
+        "price": 8.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/3651597/pexels-photo-3651597.jpeg",
+        "description": "Lightweight match shorts to pair with the jersey. Number & sponsor print available.",
+    },
+    "rugby-shirt": {
+        "id": "rugby-shirt",
+        "name": "Rugby Match Shirt",
+        "price": 24.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/342361/pexels-photo-342361.jpeg",
+        "description": "Heavy-grade rugby shirt. Reinforced collar. Crest, sponsor, names + numbers.",
+    },
+    "training-tracksuit": {
+        "id": "training-tracksuit",
+        "name": "Training Tracksuit",
+        "price": 39.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/8260101/pexels-photo-8260101.jpeg",
+        "description": "Full tracksuit (jacket + bottoms). Branded for training & travel days.",
+    },
+    "training-tee": {
+        "id": "training-tee",
+        "name": "Training Tee",
+        "price": 9.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/4720234/pexels-photo-4720234.jpeg",
+        "description": "Breathable training tee — squad name, initials, club crest.",
+    },
+    "boxing-fight-tee": {
+        "id": "boxing-fight-tee",
+        "name": "Boxing Fight Night Sponsor Tee",
+        "price": 11.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/9311461/pexels-photo-9311461.jpeg",
+        "description": "Walk-out tee for fight night — main sponsor + multiple supporting logos. Free proof included.",
+    },
+    "muay-thai-shorts": {
+        "id": "muay-thai-shorts",
+        "name": "Muay Thai / Kickboxing Shorts",
+        "price": 22.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/4761779/pexels-photo-4761779.jpeg",
+        "description": "Traditional cut Muay Thai shorts. Custom names, club logo, sponsor — vibrant satin print.",
+    },
+    "fight-shorts": {
+        "id": "fight-shorts",
+        "name": "MMA / BJJ Fight Shorts",
+        "price": 19.99,
+        "category": "sports",
+        "image": "https://images.pexels.com/photos/4761787/pexels-photo-4761787.jpeg",
+        "description": "Stretch panel fight shorts. Sublimated print — names, sponsors, gym branding.",
+    },
+
+    # ----- Team Kit Bundles (price-per-player, includes club badge + names & numbers) -----
+    "football-kit-bundle": {
+        "id": "football-kit-bundle",
+        "name": "Football Kit Bundle",
+        "price": 24.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/3621104/pexels-photo-3621104.jpeg",
+        "description": "Jersey + shorts per player. Includes club badge & names/numbers. Just upload your badge.",
+    },
+    "football-premium-bundle": {
+        "id": "football-premium-bundle",
+        "name": "Football Premium Bundle",
+        "price": 29.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/47730/the-ball-stadion-football-the-pitch-47730.jpeg",
+        "description": "Jersey + shorts + socks per player. Match-day ready. Badge + names/numbers included.",
+    },
+    "rugby-kit-bundle": {
+        "id": "rugby-kit-bundle",
+        "name": "Rugby Kit Bundle",
+        "price": 32.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/342361/pexels-photo-342361.jpeg",
+        "description": "Heavy-grade rugby shirt + shorts per player. Crest + names included.",
+    },
+    "training-pack-bundle": {
+        "id": "training-pack-bundle",
+        "name": "Training Pack",
+        "price": 17.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/4720234/pexels-photo-4720234.jpeg",
+        "description": "Breathable training tee + shorts. Club crest + initials. Perfect for mid-week sessions.",
+    },
+    "full-squad-pack": {
+        "id": "full-squad-pack",
+        "name": "Full Squad Pack",
+        "price": 54.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/8260101/pexels-photo-8260101.jpeg",
+        "description": "Match jersey + shorts + tracksuit per player. The complete squad bundle.",
+    },
+
+    # ----- Front-print-only kit variants (cheaper — no names/numbers, just badge + front sponsor) -----
+    "football-kit-front-only": {
+        "id": "football-kit-front-only",
+        "name": "Football Kit — Front Print Only",
+        "price": 18.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/3621104/pexels-photo-3621104.jpeg",
+        "description": "Jersey + shorts per player. Club badge + 1 front sponsor only. No names/numbers — saves you £6/kit.",
+    },
+    "football-premium-front-only": {
+        "id": "football-premium-front-only",
+        "name": "Football Premium — Front Print Only",
+        "price": 22.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/47730/the-ball-stadion-football-the-pitch-47730.jpeg",
+        "description": "Jersey + shorts + socks. Badge + 1 front sponsor. No names/numbers — cheaper match-day setup.",
+    },
+    "rugby-kit-front-only": {
+        "id": "rugby-kit-front-only",
+        "name": "Rugby Kit — Front Print Only",
+        "price": 25.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/342361/pexels-photo-342361.jpeg",
+        "description": "Heavy-grade rugby shirt + shorts. Crest + front sponsor only — names/numbers excluded.",
+    },
+    "training-pack-front-only": {
+        "id": "training-pack-front-only",
+        "name": "Training Pack — Front Print Only",
+        "price": 12.99,
+        "category": "team-kits",
+        "image": "https://images.pexels.com/photos/4720234/pexels-photo-4720234.jpeg",
+        "description": "Tee + shorts per player. Club crest + front sponsor only. Cheapest training option.",
+    },
+
+    # ----- Sports — additional standalone garments (use Team Kit configurator) -----
+    "basketball-vest": {
+        "id": "basketball-vest", "name": "Basketball Vest", "price": 19.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/1080884/pexels-photo-1080884.jpeg",
+        "description": "Reversible-cut basketball vest with mesh side panels. Names, numbers, sponsor.",
+    },
+    "cricket-polo": {
+        "id": "cricket-polo", "name": "Cricket Polo", "price": 21.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/3641377/pexels-photo-3641377.jpeg",
+        "description": "Coloured-cricket polo with tape-print friendly fabric. Club crest + sponsors.",
+    },
+    "hockey-shirt": {
+        "id": "hockey-shirt", "name": "Hockey Shirt", "price": 22.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/8412264/pexels-photo-8412264.jpeg",
+        "description": "Field-hockey-cut shirt with reinforced shoulders. Names, numbers, badge.",
+    },
+    "athletics-vest": {
+        "id": "athletics-vest", "name": "Athletics Vest", "price": 14.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/2304793/pexels-photo-2304793.jpeg",
+        "description": "Lightweight athletics vest. Club name + sponsor on the front.",
+    },
+    "cycling-jersey": {
+        "id": "cycling-jersey", "name": "Cycling Jersey", "price": 32.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/415992/pexels-photo-415992.jpeg",
+        "description": "Sublimation-style cycling jersey, full-body print friendly. Club + sponsors.",
+    },
+
+    # ----- Leavers' hoodies & varsity jackets -----
+    "leavers-pullover-hoodie": {
+        "id": "leavers-pullover-hoodie", "name": "Leavers' Pullover Hoodie", "price": 24.99, "category": "leavers",
+        "image": "https://images.pexels.com/photos/8839894/pexels-photo-8839894.jpeg",
+        "description": "Classic 320 GSM pullover. Names list, nicknames, year, school crest — printed UK in 7-10 days.",
+    },
+    "leavers-zip-hoodie": {
+        "id": "leavers-zip-hoodie", "name": "Leavers' Zip Hoodie", "price": 29.99, "category": "leavers",
+        "image": "https://images.pexels.com/photos/9558716/pexels-photo-9558716.jpeg",
+        "description": "Full-zip hoodie with brushed-back fleece. Bigger back-print area for class lists.",
+    },
+    "varsity-jacket": {
+        "id": "varsity-jacket", "name": "Varsity Jacket", "price": 39.99, "category": "leavers",
+        "image": "https://images.pexels.com/photos/16429777/pexels-photo-16429777.jpeg",
+        "description": "American varsity-style jacket. Letter on chest, year on back, names on sleeves.",
+    },
+    "leavers-sweatshirt": {
+        "id": "leavers-sweatshirt", "name": "Leavers' Crew Sweatshirt", "price": 22.99, "category": "leavers",
+        "image": "https://images.pexels.com/photos/8839894/pexels-photo-8839894.jpeg",
+        "description": "Crew-neck sweatshirt — lighter than the hoodie, same print options.",
+    },
+    "leavers-drawstring-bag": {
+        "id": "leavers-drawstring-bag", "name": "Printed Drawstring Bag", "price": 3.99, "category": "leavers",
+        "image": "https://images.pexels.com/photos/6764015/pexels-photo-6764015.jpeg",
+        "description": "Westford Mill-style carry-all. Same design as your hoodie — add as an addon per person.",
+    },
+
+    # ----- Aprons -----
+    "sports-team-bundle": {
+        "id": "sports-team-bundle", "name": "Sports Team Kit Bundle", "price": 21.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/1618200/pexels-photo-1618200.jpeg",
+        "description": "Generic sports team kit bundle — pick a brand from the variant list (Nike / AWD / Umbro) and we'll build your club's set to spec.",
+    },
+
+    # ----- Full Squad Configurator "set" slots -----
+    # These act as bundle IDs for admin-managed brand variants. Each represents a whole set
+    # (shirt + shorts + socks / hoodie + joggers / etc). Not sold as individual SKUs — they're
+    # entry points for /full-squad-configurator and /sports-outfit-configurator.
+    "full-squad-match-day": {
+        "id": "full-squad-match-day", "name": "Match Day Set", "price": 34.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/47730/the-ball-stadion-football-the-pitch-47730.jpeg",
+        "description": "Complete match-day set — shirt, shorts and socks. Names + numbers on the back included. Pick your brand and colours.",
+    },
+    "full-squad-training": {
+        "id": "full-squad-training", "name": "Training Set", "price": 24.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/6740803/pexels-photo-6740803.jpeg",
+        "description": "Complete training set — top, shorts and socks. Clean front badge print. Pick your brand and colours.",
+    },
+    "full-squad-tracksuit": {
+        "id": "full-squad-tracksuit", "name": "Tracksuit Set", "price": 39.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/6740053/pexels-photo-6740053.jpeg",
+        "description": "Full tracksuit — hoodie/jacket and joggers. Match-day arrival, warm-up, or squad travel wear.",
+    },
+    "sports-outfit-training": {
+        "id": "sports-outfit-training", "name": "Training Kit (top + shorts)", "price": 19.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/6551070/pexels-photo-6551070.jpeg",
+        "description": "Simple training kit for gyms, PTs and combat sports — top and shorts, no socks. Add breast, back or full-front print.",
+    },
+    "sports-outfit-tracksuit": {
+        "id": "sports-outfit-tracksuit", "name": "Tracksuit (hoodie + joggers)", "price": 34.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/6740053/pexels-photo-6740053.jpeg",
+        "description": "Comfortable tracksuit set for gyms, PTs and combat sports — hoodie and joggers. Add breast, back or full-front print.",
+    },
+    "bib-apron": {
+        "id": "bib-apron", "name": "Bib Apron", "price": 9.99, "category": "workwear",
+        "image": "https://images.pexels.com/photos/4252136/pexels-photo-4252136.jpeg",
+        "description": "Classic bib apron with double front pocket. Hospitality, catering, baristas, baking — printed or embroidered.",
+    },
+    "waist-apron": {
+        "id": "waist-apron", "name": "Waist Apron", "price": 7.49, "category": "workwear",
+        "image": "https://images.pexels.com/photos/4252888/pexels-photo-4252888.jpeg",
+        "description": "Short waist apron with pockets — perfect for front-of-house, baristas and servers.",
+    },
+    "denim-apron": {
+        "id": "denim-apron", "name": "Denim Workshop Apron", "price": 18.99, "category": "workwear",
+        "image": "https://images.pexels.com/photos/8430335/pexels-photo-8430335.jpeg",
+        "description": "Heavyweight denim workshop apron with cross-back straps. Barbers, baristas, makers and trade workshops.",
+    },
+
+    # ----- Bottoms (joggers / trousers / leggings) -----
+    "joggers": {
+        "id": "joggers", "name": "Branded Joggers", "price": 19.99, "category": "best-sellers",
+        "image": "https://images.pexels.com/photos/5384423/pexels-photo-5384423.jpeg",
+        "description": "Tapered fleece-back joggers — your logo on the thigh or hip. Gyms, leavers, fitness coaches.",
+    },
+    "workwear-trousers": {
+        "id": "workwear-trousers", "name": "Workwear Cargo Trousers", "price": 27.99, "category": "workwear",
+        "image": "https://images.pexels.com/photos/7681056/pexels-photo-7681056.jpeg",
+        "description": "Knee-pad ready cargo trousers. Reinforced seams, multiple pockets. Branded with your logo on the thigh.",
+    },
+    "performance-leggings": {
+        "id": "performance-leggings", "name": "Performance Leggings", "price": 17.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/3760275/pexels-photo-3760275.jpeg",
+        "description": "Full-length performance leggings with squat-proof fabric. Gym, PT, dance — branded with your logo.",
+    },
+    "gym-shorts": {
+        "id": "gym-shorts", "name": "Gym & Training Shorts", "price": 11.99, "category": "team-kits",
+        "image": "https://images.pexels.com/photos/4753986/pexels-photo-4753986.jpeg",
+        "description": "Lightweight gym shorts with elastic drawcord. Branded with your gym name or logo.",
+    },
+}
+
+
+# ---------- Variant defaults applied to every product ----------
+DEFAULT_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL"]
+DEFAULT_SIZE_UPCHARGES = {"3XL": 1.50, "4XL": 3.00}
+KIDS_SIZES = ["3-4", "5-6", "7-8", "9-11", "12-13"]
+
+COLOURS_GARMENT = [
+    {"name": "White", "hex": "#ffffff"},
+    {"name": "Black", "hex": "#0d0d0d"},
+    {"name": "Navy", "hex": "#1a2a4a"},
+    {"name": "Royal Blue", "hex": "#1d4ed8"},
+    {"name": "Red", "hex": "#b91c1c"},
+    {"name": "Bottle Green", "hex": "#14532d"},
+    {"name": "Grey Marl", "hex": "#9ca3af"},
+    {"name": "Yellow", "hex": "#facc15"},
+]
+COLOURS_HIVIS = [
+    {"name": "Hi-Vis Yellow", "hex": "#facc15"},
+    {"name": "Hi-Vis Orange", "hex": "#fb923c"},
+]
+COLOURS_HOODIE = [
+    {"name": "Black", "hex": "#0d0d0d"},
+    {"name": "Grey Marl", "hex": "#9ca3af"},
+    {"name": "Navy", "hex": "#1a2a4a"},
+    {"name": "Burgundy", "hex": "#7f1d1d"},
+    {"name": "Bottle Green", "hex": "#14532d"},
+    {"name": "White", "hex": "#ffffff"},
 ]
 
-async def get_pricing_config():
-    config = await db.config.find_one({"key": "pricing"})
-    tiers = config.get("tiers", DEFAULT_TIERS) if config else DEFAULT_TIERS
-    back_print_price = config.get("back_print_price", 2.50) if config else 2.50
-    return tiers, back_print_price
+# Apply variants to each product
+_VARIANT_MAP = {
+    "personalised-tee":    {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "personalised-hoodie": {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "kids-tee":            {"colors": COLOURS_GARMENT, "sizes": KIDS_SIZES, "size_upcharges": {}},
+    "polo-shirt":          {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "workwear-jacket":     {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Charcoal", "hex": "#374151"}], "sizes": DEFAULT_SIZES[1:], "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "hi-vis-vest":         {"colors": COLOURS_HIVIS, "sizes": ["S/M", "L/XL", "XXL"], "size_upcharges": {}},
+    "workwear-tshirt":     {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "workwear-sweatshirt": {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "school-hoodie":       {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "team-polo":           {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "dance-tee":           {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "sports-tee":          {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    # Sports & combat
+    "football-jersey":     {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "football-shorts":     {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "White", "hex": "#ffffff"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Royal", "hex": "#1d4ed8"}, {"name": "Red", "hex": "#b91c1c"}], "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": {}},
+    "rugby-shirt":         {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "training-tracksuit":  {"colors": COLOURS_HOODIE, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "training-tee":        {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "boxing-fight-tee":    {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "White", "hex": "#ffffff"}, {"name": "Red", "hex": "#b91c1c"}, {"name": "Royal", "hex": "#1d4ed8"}], "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "muay-thai-shorts":    {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Red", "hex": "#b91c1c"}, {"name": "Royal", "hex": "#1d4ed8"}, {"name": "Gold", "hex": "#d4a017"}], "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "fight-shorts":        {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Red", "hex": "#b91c1c"}], "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    # Team kit bundles — full size range incl. kids
+    "football-kit-bundle":    {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "football-premium-bundle":{"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "rugby-kit-bundle":       {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "training-pack-bundle":   {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "full-squad-pack":        {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "football-kit-front-only":     {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "football-premium-front-only": {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "rugby-kit-front-only":        {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "training-pack-front-only":    {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "basketball-vest":             {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES,              "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "cricket-polo":                {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES,              "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "hockey-shirt":                {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "athletics-vest":              {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES + KIDS_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "cycling-jersey":              {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES,              "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "leavers-pullover-hoodie":     {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES,              "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "leavers-zip-hoodie":          {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES,              "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "varsity-jacket":              {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES,              "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "leavers-sweatshirt":          {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES,              "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "leavers-drawstring-bag":      {"colors": COLOURS_GARMENT, "sizes": ["One Size"],              "size_upcharges": {}},
+    # Sports team generic bundle
+    "sports-team-bundle":          {"colors": COLOURS_GARMENT, "sizes": KIDS_SIZES + DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    # Full Squad Configurator "set" slots
+    "full-squad-match-day":        {"colors": COLOURS_GARMENT, "sizes": KIDS_SIZES + DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "full-squad-training":         {"colors": COLOURS_GARMENT, "sizes": KIDS_SIZES + DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "full-squad-tracksuit":        {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "sports-outfit-training":      {"colors": COLOURS_GARMENT, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "sports-outfit-tracksuit":     {"colors": COLOURS_HOODIE,  "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    # Aprons
+    "bib-apron":                   {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Burgundy", "hex": "#7f1d1d"}, {"name": "Khaki", "hex": "#8b7355"}, {"name": "White", "hex": "#ffffff"}], "sizes": ["One Size"], "size_upcharges": {}},
+    "waist-apron":                 {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Burgundy", "hex": "#7f1d1d"}], "sizes": ["One Size"], "size_upcharges": {}},
+    "denim-apron":                 {"colors": [{"name": "Indigo Denim", "hex": "#1e3a8a"}, {"name": "Black Denim", "hex": "#1a1a1a"}], "sizes": ["One Size"], "size_upcharges": {}},
+    # Bottoms
+    "joggers":                     {"colors": COLOURS_HOODIE, "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "workwear-trousers":           {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Charcoal", "hex": "#374151"}, {"name": "Khaki", "hex": "#8b7355"}], "sizes": ["28", "30", "32", "34", "36", "38", "40", "42"], "size_upcharges": {"40": 1.50, "42": 3.00}},
+    "performance-leggings":        {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Burgundy", "hex": "#7f1d1d"}], "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+    "gym-shorts":                  {"colors": [{"name": "Black", "hex": "#0d0d0d"}, {"name": "Navy", "hex": "#1a2a4a"}, {"name": "Grey Marl", "hex": "#9ca3af"}], "sizes": DEFAULT_SIZES, "size_upcharges": DEFAULT_SIZE_UPCHARGES},
+}
+for _pid, _meta in _VARIANT_MAP.items():
+    if _pid in PRODUCTS:
+        PRODUCTS[_pid].update(_meta)
 
-def get_tier_price(tiers, quantity):
-    for tier in sorted(tiers, key=lambda t: t["min_qty"]):
-        if tier["min_qty"] <= quantity <= tier["max_qty"]:
-            return tier["price"]
-    return tiers[-1]["price"] if tiers else 17.99
 
-@api_router.get("/pricing")
-async def get_pricing():
-    tiers, back_print_price = await get_pricing_config()
-    lowest = min(t["price"] for t in tiers)
-    return {
-        "tiers": tiers,
-        "back_print_price": back_print_price,
-        "base_price": tiers[0]["price"],
-        "lowest_price": lowest,
-        "currency": "GBP",
-        "currency_symbol": "£",
-    }
+# ---------- Designer (Design Your Own) configuration ----------
+# Products enabled in the designer + their canvas image + print-area bounds (percent).
+DEFAULT_PRINT_AREA = {"x": 22, "y": 20, "w": 56, "h": 55}
+_DESIGNER_DEFAULTS: Dict[str, Dict] = {
+    "personalised-tee":     {"designer_enabled": True, "designer_image": PRODUCTS["personalised-tee"]["image"],     "designer_print_area": DEFAULT_PRINT_AREA},
+    "personalised-hoodie":  {"designer_enabled": True, "designer_image": PRODUCTS["personalised-hoodie"]["image"],  "designer_print_area": DEFAULT_PRINT_AREA},
+    "kids-tee":             {"designer_enabled": True, "designer_image": PRODUCTS["kids-tee"]["image"],             "designer_print_area": DEFAULT_PRINT_AREA},
+    "polo-shirt":           {"designer_enabled": True, "designer_image": PRODUCTS["polo-shirt"]["image"],           "designer_print_area": {"x": 28, "y": 26, "w": 44, "h": 40}},
+    "workwear-tshirt":      {"designer_enabled": True, "designer_image": PRODUCTS["workwear-tshirt"]["image"],      "designer_print_area": DEFAULT_PRINT_AREA},
+    "workwear-sweatshirt":  {"designer_enabled": True, "designer_image": PRODUCTS["workwear-sweatshirt"]["image"],  "designer_print_area": DEFAULT_PRINT_AREA},
+    "school-hoodie":        {"designer_enabled": True, "designer_image": PRODUCTS["school-hoodie"]["image"],        "designer_print_area": DEFAULT_PRINT_AREA},
+    "sports-tee":           {"designer_enabled": True, "designer_image": PRODUCTS["sports-tee"]["image"],           "designer_print_area": DEFAULT_PRINT_AREA},
+}
+for _pid, _meta in _DESIGNER_DEFAULTS.items():
+    if _pid in PRODUCTS:
+        PRODUCTS[_pid].update(_meta)
 
-@api_router.patch("/admin/pricing")
-async def update_pricing(data: dict):
-    update = {}
-    if "back_print_price" in data:
-        update["back_print_price"] = float(data["back_print_price"])
-    if "tiers" in data:
-        update["tiers"] = data["tiers"]
-    if not update:
-        raise HTTPException(status_code=400, detail="No valid fields")
-    await db.config.update_one(
-        {"key": "pricing"},
-        {"$set": {**update, "key": "pricing"}},
-        upsert=True
+
+# Designer product info (composition / long description / use-case badges).
+# Surfaced in the Designer product picker to help brand-builders pick the right blank.
+_DESIGNER_INFO: Dict[str, Dict] = {
+    "personalised-tee":     {"composition": "180 GSM · 100% ring-spun cotton",            "description_long": "Mid-weight everyday tee. Soft hand, durable wash, slight stretch in the collar. Our most versatile blank.",                  "use_cases": ["branded-to-sell", "daily-use"]},
+    "personalised-hoodie":  {"composition": "320 GSM · 80% cotton / 20% polyester brushed-back fleece", "description_long": "Heavyweight pullover hoodie with kangaroo pocket and double-lined hood. Premium feel — sits well on the high street.", "use_cases": ["branded-to-sell", "daily-use"]},
+    "kids-tee":             {"composition": "165 GSM · 100% combed cotton",                "description_long": "Lightweight kids' tee, sized 3–14yrs. Soft against young skin and wash-resistant down to 40°C.",                                "use_cases": ["kids", "daily-use"]},
+    "polo-shirt":           {"composition": "210 GSM · 65% polyester / 35% cotton piqué",  "description_long": "Easy-iron piqué polo with reinforced taped neckline. Pro look, ideal for client-facing teams.",                                "use_cases": ["workwear", "branded-to-sell"]},
+    "workwear-tshirt":      {"composition": "200 GSM · 100% ring-spun cotton heavy",       "description_long": "Workwear-grade tee with reinforced shoulders and tear-away neck label. Industrial-wash safe up to 60°C.",                       "use_cases": ["workwear", "daily-use"]},
+    "workwear-sweatshirt":  {"composition": "280 GSM · 50/50 cotton-poly fleece",          "description_long": "Crew-neck workwear sweatshirt. Ribbed cuffs/hem, no pilling, holds shape across heavy use.",                                  "use_cases": ["workwear"]},
+    "school-hoodie":        {"composition": "300 GSM · 80% cotton / 20% polyester",        "description_long": "Robust school-grade hoodie. Soft inner brushed fleece, durable seams, named-print friendly.",                                "use_cases": ["kids", "daily-use"]},
+    "sports-tee":           {"composition": "150 GSM · 100% recycled polyester wicking",   "description_long": "Lightweight performance tee with moisture-wicking finish and four-way stretch. Eco-credentials on the swing tag.",            "use_cases": ["sports", "eco"]},
+}
+for _pid, _meta in _DESIGNER_INFO.items():
+    if _pid in PRODUCTS:
+        PRODUCTS[_pid].update(_meta)
+
+
+# ---------- Print placements ----------
+PLACEMENTS: List[Dict] = [
+    {"id": "left-breast",  "label": "Left breast",  "price": 2.50, "excludes": ["full-front"]},
+    {"id": "right-breast", "label": "Right breast", "price": 2.50, "excludes": ["full-front"]},
+    {"id": "full-front",   "label": "Full front",   "price": 3.50, "excludes": ["left-breast", "right-breast"]},
+    {"id": "back-print",   "label": "Back print",   "price": 3.50, "excludes": []},
+    {"id": "left-sleeve",  "label": "Left sleeve",  "price": 1.50, "excludes": []},
+    {"id": "right-sleeve", "label": "Right sleeve", "price": 1.50, "excludes": []},
+]
+PLACEMENT_BY_ID = {p["id"]: p for p in PLACEMENTS}
+
+# Fight-night tee specific addon prices (overrides PLACEMENT_BY_ID for product_id='boxing-fight-tee')
+FIGHT_NIGHT_ADDONS: Dict[str, Dict] = {
+    "back-print":   {"label": "Back print",   "price": 3.50},
+    "left-sleeve":  {"label": "Left sleeve",  "price": 3.00},
+    "right-sleeve": {"label": "Right sleeve", "price": 3.00},
+}
+
+# Team-kit addon pricing (per player, applied to category=team-kits products only).
+# Front sponsor is FREE & included. Sleeves & back print are paid extras.
+TEAM_KIT_ADDONS: Dict[str, Dict] = {
+    "left-sleeve":  {"label": "Left sleeve logo",  "price": 3.00},
+    "right-sleeve": {"label": "Right sleeve logo", "price": 3.00},
+    "back-print":   {"label": "Back print",        "price": 3.50},
+}
+
+
+def _validate_placements(placements: List[str]) -> List[str]:
+    """Return cleaned placements list, raising 400 if exclusivity rules are broken."""
+    cleaned = [p for p in (placements or []) if p in PLACEMENT_BY_ID]
+    for pid in cleaned:
+        for excl in PLACEMENT_BY_ID[pid]["excludes"]:
+            if excl in cleaned:
+                raise HTTPException(400, f"'{pid}' cannot be combined with '{excl}'")
+    return cleaned
+
+
+# ---------- Models ----------
+class ContactRequest(BaseModel):
+    name: str
+    email: EmailStr
+    phone: Optional[str] = ""
+    company: Optional[str] = ""
+    message: str
+    quantity: Optional[str] = ""
+    sector: Optional[str] = ""
+
+
+class ContactRecord(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    email: str
+    phone: str = ""
+    company: str = ""
+    message: str
+    quantity: str = ""
+    sector: str = ""
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
     )
-    return {"message": "Pricing updated"}
 
-# ── Discount Codes ──────────────────────────────────────────────────────────
 
-@api_router.get("/admin/discount-codes")
-async def get_discount_codes():
-    codes = await db.discount_codes.find({}, {"_id": 0}).to_list(100)
-    return codes
+class ThemeSelectionRequest(BaseModel):
+    theme_id: str
+    note: Optional[str] = ""
 
-@api_router.post("/admin/discount-codes")
-async def create_discount_code(data: dict):
-    code = data.get("code", "").upper().strip()
-    percent = int(data.get("percent_off", 0))
-    if not code or not (1 <= percent <= 100):
-        raise HTTPException(status_code=400, detail="Invalid code or percent")
-    existing = await db.discount_codes.find_one({"code": code})
-    if existing:
-        raise HTTPException(status_code=400, detail="Code already exists")
-    doc = {
-        "code": code,
-        "percent_off": percent,
-        "active": True,
-        "uses": 0,
-        "created_at": datetime.now(timezone.utc).isoformat()
-    }
-    await db.discount_codes.insert_one(doc)
-    return doc
 
-@api_router.delete("/admin/discount-codes/{code}")
-async def delete_discount_code(code: str):
-    await db.discount_codes.delete_one({"code": code.upper()})
-    return {"message": "Deleted"}
+class CheckoutRequest(BaseModel):
+    product_id: str
+    quantity: int = 1  # legacy single-size path
+    size: Optional[str] = "M"  # legacy
+    # New richer fields (preferred):
+    size_qtys: Optional[Dict[str, int]] = None  # {"M": 5, "L": 10, ...}
+    color: Optional[str] = None
+    placements: Optional[List[str]] = None
+    blank: bool = False  # "buy blank" — no placements
+    origin_url: str
+    design_meta: Optional[Dict[str, str]] = None
 
-@api_router.patch("/admin/discount-codes/{code}")
-async def toggle_discount_code(code: str, data: dict):
-    await db.discount_codes.update_one({"code": code.upper()}, {"$set": {"active": data.get("active", True)}})
-    return {"message": "Updated"}
 
-@api_router.post("/validate-discount")
-async def validate_discount(data: dict):
-    code = data.get("code", "").upper().strip()
-    if not code:
-        raise HTTPException(status_code=400, detail="No code provided")
-    doc = await db.discount_codes.find_one({"code": code})
-    if not doc:
-        raise HTTPException(status_code=404, detail="Invalid discount code")
-    if not doc.get("active", True):
-        raise HTTPException(status_code=400, detail="This code is no longer active")
-    return {"code": code, "percent_off": doc["percent_off"], "valid": True}
+class CheckoutResponse(BaseModel):
+    url: str
+    session_id: str
 
-# ============ SEO SETTINGS ============
 
-@api_router.get("/admin/seo-settings")
-async def get_seo_settings():
-    config = await db.config.find_one({"key": "seo"})
-    if not config:
-        return {}
-    config.pop('_id', None)
-    config.pop('key', None)
-    return config
+class CheckoutStatusOut(BaseModel):
+    session_id: str
+    status: str
+    payment_status: str
+    amount_total: float
+    currency: str
 
-@api_router.patch("/admin/seo-settings")
-async def update_seo_settings(data: dict):
-    await db.config.update_one(
-        {"key": "seo"},
-        {"$set": {**data, "key": "seo"}},
-        upsert=True
-    )
-    return {"message": "SEO settings updated"}
 
-# ============ TRACKING & PIXELS ============
+# ---------- Reviews ----------
+class ReviewCreate(BaseModel):
+    product_id: str
+    reviewer_name: str
+    reviewer_email: Optional[EmailStr] = None
+    rating: int  # 1-5
+    title: str
+    body: str
+    photos: Optional[List[str]] = None  # base64 data URLs, max 4
+    verified: bool = False  # set by backend, not client
 
-@api_router.get("/tracking-config")
-async def get_tracking_config():
-    """Public endpoint — returns active pixel IDs for frontend to load"""
-    config = await db.config.find_one({"key": "tracking"})
-    if not config:
-        return {"google_tag_id": "", "facebook_pixel_id": ""}
-    return {
-        "google_tag_id": config.get("google_tag_id", ""),
-        "facebook_pixel_id": config.get("facebook_pixel_id", ""),
-    }
 
-@api_router.get("/admin/tracking-config")
-async def get_tracking_config_admin():
-    """Admin endpoint — returns all tracking settings including secret tokens"""
-    config = await db.config.find_one({"key": "tracking"})
-    if not config:
-        return {"google_tag_id": "", "facebook_pixel_id": "", "facebook_access_token": ""}
-    return {
-        "google_tag_id": config.get("google_tag_id", ""),
-        "facebook_pixel_id": config.get("facebook_pixel_id", ""),
-        "facebook_access_token": config.get("facebook_access_token", ""),
-    }
+class ReviewOut(BaseModel):
+    id: str
+    product_id: str
+    reviewer_name: str
+    rating: int
+    title: str
+    body: str
+    photos: List[str] = []
+    verified: bool = False
+    source: str = "native"  # 'native' | 'judgeme'
+    created_at: str
 
-@api_router.patch("/admin/tracking-config")
-async def update_tracking_config(data: dict):
-    allowed = {"google_tag_id", "facebook_pixel_id", "facebook_access_token"}
-    clean = {k: v for k, v in data.items() if k in allowed}
-    if not clean:
-        raise HTTPException(status_code=400, detail="No valid fields")
-    await db.config.update_one(
-        {"key": "tracking"},
-        {"$set": {**clean, "key": "tracking"}},
-        upsert=True
-    )
-    return {"message": "Tracking config updated"}
 
-async def send_facebook_purchase_event(order: dict):
-    """Send purchase event to Facebook Conversions API"""
-    config = await db.config.find_one({"key": "tracking"})
-    if not config:
-        return
-    pixel_id = config.get("facebook_pixel_id", "")
-    access_token = config.get("facebook_access_token", "")
-    if not pixel_id or not access_token:
-        return
+class JudgeMeImportRequest(BaseModel):
+    # Accepts either a list of raw Judge.me review objects, or the shape returned by the widget API.
+    reviews: List[Dict] = Field(default_factory=list)
+    default_product_id: Optional[str] = None  # fallback if review has no mapping
+    product_id_map: Optional[Dict[str, str]] = None  # judgeme product_id/title -> our product_id
+
+
+class QuoteRequest(BaseModel):
+    """Generic quote request — used for team kits 10+, fight-night 'do it for us', bespoke print enquiries."""
+    kind: str  # 'team_kit' | 'fight_night' | 'bespoke_print' | 'general'
+    name: str
+    email: EmailStr
+    phone: Optional[str] = ""
+    company: Optional[str] = ""  # club / gym / business name
+    sport: Optional[str] = ""
+    kit_type: Optional[str] = ""  # home/away/training/etc.
+    quantity: Optional[int] = 0
+    deadline: Optional[str] = ""
+    message: str
+    # File metadata only — files referenced by data URL or external URL.
+    artwork: Optional[List[str]] = None  # base64 data URLs; size-limited each
+    attachments: Optional[List[Dict]] = None  # [{id, url, filename, purpose}, ...] from /api/uploads/artwork
+    roster: Optional[List[Dict]] = None  # [{name, number, size, qty}, ...]
+    product_id: Optional[str] = None
+
+
+def _photo_ok(s: str) -> bool:
+    return isinstance(s, str) and s.startswith("data:image/") and len(s) < 1_500_000  # < ~1.5MB
+
+
+# ---------- Routes ----------
+@api_router.get("/")
+async def root():
+    return {"message": "Your Own Print API"}
+
+
+@api_router.get("/products")
+async def list_products(category: Optional[str] = None):
+    if category:
+        return [p for p in PRODUCTS.values() if p["category"] == category]
+    return list(PRODUCTS.values())
+
+
+@api_router.get("/products/{product_id}")
+async def get_product(product_id: str):
+    if product_id not in PRODUCTS:
+        raise HTTPException(404, "Product not found")
+    return PRODUCTS[product_id]
+
+
+@api_router.post("/contact")
+async def submit_contact(payload: ContactRequest):
+    record = ContactRecord(**payload.model_dump())
+    await db.contact_submissions.insert_one(record.model_dump())
+    # Fire Resend notification to the shop — non-blocking. Failures don't affect the response.
     try:
-        import hashlib
-        def hash_val(val):
-            return hashlib.sha256(val.strip().lower().encode()).hexdigest() if val else None
-
-        email = order.get("customer_email", "")
-        phone = order.get("customer_phone", "").replace(" ", "").replace("+", "")
-        total = order.get("total_amount", 0)
-
-        payload = {
-            "data": [{
-                "event_name": "Purchase",
-                "event_time": int(datetime.now(timezone.utc).timestamp()),
-                "event_id": order.get("id", ""),
-                "action_source": "website",
-                "user_data": {
-                    "em": [hash_val(email)] if email else [],
-                    "ph": [hash_val(phone)] if phone else [],
-                    "country": [hash_val("gb")],
-                },
-                "custom_data": {
-                    "currency": "GBP",
-                    "value": float(total),
-                    "order_id": order.get("order_number", ""),
-                    "num_items": len(order.get("items", [])),
-                },
-            }]
-        }
-        url = f"https://graph.facebook.com/v18.0/{pixel_id}/events?access_token={access_token}"
-        resp = requests.post(url, json=payload, timeout=10)
-        if resp.status_code == 200:
-            logger.info(f"Facebook Purchase event sent for order {order.get('order_number','')}")
-        else:
-            logger.error(f"Facebook API error: {resp.text}")
+        shop_to = await _shop_notification_recipient()
+        if shop_to:
+            body = _email_wrap(
+                f"New quote enquiry — {payload.name}",
+                f"""
+                <p><strong>{payload.name}</strong> {'(' + payload.company + ')' if payload.company else ''} has submitted the /contact form.</p>
+                <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px;margin-top:8px">
+                  <tr><td style="color:#4b5563"><strong>Email</strong></td><td>{payload.email}</td></tr>
+                  <tr><td style="color:#4b5563"><strong>Phone</strong></td><td>{payload.phone or '—'}</td></tr>
+                  <tr><td style="color:#4b5563"><strong>Sector</strong></td><td>{payload.sector or '—'}</td></tr>
+                  <tr><td style="color:#4b5563"><strong>Est. qty</strong></td><td>{payload.quantity or '—'}</td></tr>
+                  <tr><td style="color:#4b5563" valign="top"><strong>Message</strong></td><td>{(payload.message or '—').replace(chr(10),'<br>')}</td></tr>
+                </table>
+                """,
+            )
+            await _send_email(to=[shop_to], subject=f"[Quote] {payload.name} — {payload.company or 'no company'}",
+                              html=body, reply_to=payload.email)
     except Exception as e:
-        logger.error(f"Failed to send Facebook Purchase event: {e}")
+        logging.warning(f"contact email dispatch skipped: {e}")
+    return {"ok": True, "id": record.id}
 
-# ============ ADMIN BULK TEMPLATE IMPORT ============
 
-@api_router.patch("/admin/templates/{template_id}")
-async def update_template(template_id: str, data: dict):
-    """Update a template by ID"""
-    allowed = {"name", "body_image_url", "product_image_url", "categories", "active", 
-               "is_popular", "is_new", "head_placement", "text_fields"}
-    clean = {k: v for k, v in data.items() if k in allowed}
-    if not clean:
-        raise HTTPException(status_code=400, detail="No valid fields")
-    await db.templates.update_one({"id": template_id}, {"$set": clean})
-    return {"message": "Updated"}
-
-@api_router.post("/admin/templates/fix-all-cloudinary")
-async def fix_all_cloudinary_urls():
-    """Replace all remaining Cloudinary URLs with R2 equivalents"""
-    BASE = "https://pub-ac6681582ccc439ca43cef357512c6bc.r2.dev"
-    
-    # Map of cloudinary filename patterns to R2 filenames
-    template_map = {
-        "LifeguardIIDESIGN-Stag-11": (f"{BASE}/templates/LifeguardIIDESIGN-Stag-11.png", f"{BASE}/products/LifeguardIIDESIGN-Stag-11.jpg"),
-        "ChickenmanDESIGN-Stag-4": (f"{BASE}/templates/ChickenmanDESIGN-Stag-4.png", f"{BASE}/products/ChickenmanDESIGN-Stag-4.jpg"),
-        "CvemanDESIGN-Stag-12": (f"{BASE}/templates/CvemanDESIGN-Stag-12.png", f"{BASE}/products/CvemanDESIGN-Stag-12.jpg"),
-        "WrestlerIIDESIGN-Stag-17": (f"{BASE}/templates/WrestlerIIDESIGN-Stag-17.png", f"{BASE}/products/WrestlerIIDESIGN-Stag-17.jpg"),
-        "80sDiscoIIDESIGN-Stag-10": (f"{BASE}/templates/80sDiscoIIDESIGN-Stag-10.png", f"{BASE}/products/80sDiscoIIDESIGN-Stag-10.jpg"),
-        "CheerleaderIIDESIGN-Stag-7": (f"{BASE}/templates/CheerleaderIIDESIGN-Stag-7.png", f"{BASE}/products/CheerleaderIIDESIGN-Stag-7.jpg"),
-        "BallerinaIIDESIGN-Stag-21": (f"{BASE}/templates/BallerinaIIDESIGN-Stag-21.png", f"{BASE}/products/BallerinaIIDESIGN-Stag-21.jpg"),
-        "WrestlerIDESIGN-TGPHEN25-47": (f"{BASE}/templates/WrestlerIDESIGN-TGPHEN25-47.png", f"{BASE}/products/WrestlerI-TGPHEN25-47.jpg"),
-        "TGPHEN25-25": (f"{BASE}/templates/TGPHEN25-25.png", f"{BASE}/products/TGPHEN25-25.jpg"),
-        "SumoIIDESIGN-TGPHEN25-56": (f"{BASE}/templates/SumoIIDESIGN-TGPHEN25-56.png", f"{BASE}/products/SumoII-TGPHEN25-56.jpg"),
-        "FunkyShirtDESIGN-TGPHEN25-30": (f"{BASE}/templates/FunkyShirtDESIGN-TGPHEN25-30.png", f"{BASE}/products/FunkyShirt-TGPHEN25-30.jpg"),
-        "DJBrideDESIGN-TGPHEN25-17": (f"{BASE}/templates/DJBrideDESIGN-TGPHEN25-17.png", f"{BASE}/products/DJBride-TGPHEN25-17.jpg"),
-        "BridefuelDESIGN-TGPHEN25-18": (f"{BASE}/templates/BridefuelDESIGN-TGPHEN25-18.png", f"{BASE}/products/Bridefuel-TGPHEN25-18.jpg"),
-        "WrestlerIIDESIGN-TGPHEN25-46": (f"{BASE}/templates/WrestlerIIDESIGN-TGPHEN25-46.png", f"{BASE}/products/WrestlerII-TGPHEN25-46.jpg"),
-        "UnicornDESIGN-TGPHEN25-34": (f"{BASE}/templates/UnicornDESIGN-TGPHEN25-34.png", f"{BASE}/products/Unicorn-TGPHEN25-34.jpg"),
-        "SuperheroIIIDESIGN-TGPHEN25-41": (f"{BASE}/templates/SuperheroIIIDESIGN-TGPHEN25-41.png", f"{BASE}/products/SuperheroIII-TGPHEN25-41.jpg"),
-        "SuperheroIIDESIGN-TGPHEN25-43": (f"{BASE}/templates/SuperheroIIDESIGN-TGPHEN25-43.png", f"{BASE}/products/SuperheroII-TGPHEN25-43.jpg"),
-        "80DiscoIIDESIGN-TGPHEN25-20": (f"{BASE}/templates/80DiscoIIDESIGN-TGPHEN25-20.png", f"{BASE}/products/80DiscoII-TGPHEN25-20.jpg"),
-        "BodybuilderDESIGN-TGPHEN25-15": (f"{BASE}/templates/BodybuilderDESIGN-TGPHEN25-15.png", f"{BASE}/products/Bodybuilder-TGPHEN25-15.jpg"),
-        "80sDiscoIDESIGN-TGPHEN25-19": (f"{BASE}/templates/80sDiscoIDESIGN-TGPHEN25-19.png", f"{BASE}/products/80sDiscoI-TGPHEN25-19.jpg"),
-        "BarbieDollDESIGN-TGPHEN25-1": (f"{BASE}/templates/BarbieDollDESIGN-TGPHEN25-1.png", f"{BASE}/products/BarbieDoll-TGPHEN25-1.jpg"),
-        "SuperheroDESIGN-Stag-2": (f"{BASE}/templates/SuperheroDESIGN-Stag-2.png", f"{BASE}/products/Superhero-Stag-2.jpg"),
+@api_router.post("/theme-selection")
+async def select_theme(payload: ThemeSelectionRequest):
+    doc = {
+        "id": str(uuid.uuid4()),
+        "theme_id": payload.theme_id,
+        "note": payload.note,
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    
-    # Find all templates still using Cloudinary
-    all_templates = await db.templates.find({}).to_list(1000)
-    updated = 0
+    await db.theme_selections.insert_one(doc)
+    return {"ok": True, "id": doc["id"]}
+
+
+@api_router.get("/placements")
+async def list_placements():
+    return PLACEMENTS
+
+
+@api_router.get("/fight-night/addons")
+async def list_fight_night_addons():
+    return [{"id": k, **v} for k, v in FIGHT_NIGHT_ADDONS.items()]
+
+
+@api_router.get("/team-kits/addons")
+async def list_team_kit_addons():
+    return [{"id": k, **v} for k, v in TEAM_KIT_ADDONS.items()]
+
+
+# ---------- Team-kit brands (admin-editable) ----------
+class TeamKitBrand(BaseModel):
+    id: Optional[str] = None
+    product_id: str  # links to one of the team-kits products OR a full-squad "set" slot
+    brand: str
+    name: str
+    price: float
+    image: Optional[str] = ""
+    description: Optional[str] = ""
+    active: bool = True
+    # New optional fields for the Full Squad + Sports Outfit configurators
+    colours: Optional[List[Dict]] = None       # [{name, hex}, ...] — kit colour choices per variant
+    sizes: Optional[List[str]] = None          # available body sizes (overrides product default when set)
+    sock_sizes: Optional[List[str]] = None     # per-variant sock size options (falls back to global settings)
+    size_guide: Optional[str] = ""              # free-form markdown/table shown in dropdown
+    included_items: Optional[List[str]] = None  # e.g. ["Shirt", "Shorts", "Socks"] — displayed on the tile
+    display_order: Optional[int] = 0
+
+
+@api_router.get("/team-kit-brands")
+async def list_brands(product_id: Optional[str] = None):
+    q = {"active": True}
+    if product_id:
+        q["product_id"] = product_id
+    out = []
+    _fields = ["id", "product_id", "brand", "name", "price", "image", "description", "active",
+               "colours", "sizes", "sock_sizes", "size_guide", "included_items", "display_order"]
+    async for d in db.team_kit_brands.find(q).sort([("display_order", 1), ("price", 1)]):
+        out.append({k: d.get(k) for k in _fields})
+    return out
+
+
+@api_router.post("/team-kit-brands", dependencies=[Depends(require_admin)])
+async def create_brand(payload: TeamKitBrand):
+    if payload.product_id not in PRODUCTS:
+        raise HTTPException(400, "Unknown product_id")
+    doc = payload.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    # Support data-URL images — persist to object storage and swap in a stable URL
+    if doc.get("image") and doc["image"].startswith("data:"):
+        try:
+            raw, content_type, ext = _parse_data_url(doc["image"])
+            storage_path = f"{_OBJ_APP_NAME}/team-kit-brands/{doc['id']}.{ext}"
+            _storage_put(storage_path, raw, content_type)
+            doc["image"] = f"/api/portfolio/file/{doc['id']}.{ext}"
+            await db.portfolio.insert_one({
+                "id": doc["id"], "title": f"{payload.brand} {payload.name}".strip(),
+                "category": "other", "image_url": doc["image"], "storage_path": storage_path,
+                "content_type": content_type, "size_bytes": len(raw),
+                "display_order": 9999, "featured": False, "is_hidden": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except HTTPException:
+            pass    # fall back to inline data URL
+    doc["created_at"] = datetime.now(timezone.utc).isoformat()
+    await db.team_kit_brands.insert_one(doc)
+    _fields = ["id", "product_id", "brand", "name", "price", "image", "description", "active",
+               "colours", "sizes", "sock_sizes", "size_guide", "included_items", "display_order"]
+    return {k: doc.get(k) for k in _fields}
+
+
+@api_router.put("/team-kit-brands/{brand_id}", dependencies=[Depends(require_admin)])
+async def update_brand(brand_id: str, payload: TeamKitBrand):
+    update = {k: v for k, v in payload.model_dump().items() if k != "id"}
+    # Data-URL image → object storage
+    if update.get("image") and update["image"].startswith("data:"):
+        try:
+            raw, content_type, ext = _parse_data_url(update["image"])
+            storage_path = f"{_OBJ_APP_NAME}/team-kit-brands/{brand_id}.{ext}"
+            _storage_put(storage_path, raw, content_type)
+            update["image"] = f"/api/portfolio/file/{brand_id}.{ext}"
+            await db.portfolio.update_one(
+                {"id": brand_id},
+                {"$set": {"id": brand_id, "image_url": update["image"], "storage_path": storage_path,
+                          "content_type": content_type, "size_bytes": len(raw),
+                          "is_hidden": True, "category": "other"}},
+                upsert=True,
+            )
+        except HTTPException:
+            pass
+    update["updated_at"] = datetime.now(timezone.utc).isoformat()
+    res = await db.team_kit_brands.update_one({"id": brand_id}, {"$set": update})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Brand not found")
+    return {"ok": True}
+
+
+@api_router.delete("/team-kit-brands/{brand_id}", dependencies=[Depends(require_admin)])
+async def delete_brand(brand_id: str):
+    res = await db.team_kit_brands.delete_one({"id": brand_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Brand not found")
+    return {"ok": True}
+
+
+@api_router.post("/quote-request")
+async def create_quote_request(payload: QuoteRequest):
+    # Limit artwork sizes silently
+    artwork = [a for a in (payload.artwork or []) if isinstance(a, str) and len(a) < 1_500_000][:12]
+    doc = {
+        "id": str(uuid.uuid4()),
+        "kind": payload.kind,
+        "name": payload.name.strip()[:80],
+        "email": payload.email,
+        "phone": (payload.phone or "")[:40],
+        "company": (payload.company or "")[:120],
+        "sport": (payload.sport or "")[:60],
+        "kit_type": (payload.kit_type or "")[:60],
+        "quantity": int(payload.quantity or 0),
+        "deadline": (payload.deadline or "")[:60],
+        "message": (payload.message or "")[:5000],
+        "artwork": artwork,
+        "attachments": [
+            {
+                "id": str(a.get("id") or "")[:60],
+                "url": str(a.get("url") or "")[:400],
+                "filename": str(a.get("filename") or "")[:200],
+                "purpose": str(a.get("purpose") or "")[:60],
+                "section": str(a.get("section") or "")[:80],
+                "size_bytes": int(a.get("size_bytes") or 0),
+            }
+            for a in (payload.attachments or [])[:12]
+            if isinstance(a, dict)
+        ],
+        "roster": (payload.roster or [])[:300],
+        "product_id": payload.product_id,
+        "status": "new",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.quote_requests.insert_one(doc)
+    return {"ok": True, "id": doc["id"]}
+
+
+# ---------- Stripe Checkout ----------
+@api_router.post("/checkout/session", response_model=CheckoutResponse)
+async def create_checkout(payload: CheckoutRequest, http_request: Request):
+    # Normalise legacy {size, quantity} → {size_qtys} so the shared helper can price it
+    if payload.size_qtys:
+        size_qtys = dict(payload.size_qtys)
+    else:
+        sz = payload.size or "M"
+        q_int = int(payload.quantity) if payload.quantity is not None else 1
+        if q_int < 1:
+            raise HTTPException(400, "Quantity must be ≥ 1")
+        product = PRODUCTS.get(payload.product_id) or {}
+        allowed_sizes = set(product.get("sizes") or [])
+        if allowed_sizes and sz not in allowed_sizes:
+            sz = next(iter(allowed_sizes)) if allowed_sizes else sz
+        size_qtys = {sz: q_int}
+
+    priced = await _resolve_line_pricing(
+        product_id=payload.product_id,
+        size_qtys=size_qtys,
+        placements=payload.placements,
+        blank=payload.blank,
+        color=payload.color,
+        design_meta=payload.design_meta,
+    )
+    product = priced["product"]
+    placements_clean = priced["placements_clean"]
+    size_qtys = priced["size_qtys"]
+    total_qty = priced["total_qty"]
+    total_amount = priced["line_total"]
+    line_breakdown = priced["breakdown"]
+    print_cost = priced["print_cost"]
+
+    if total_amount < 0.5:
+        raise HTTPException(400, "Total below Stripe minimum (£0.50)")
+
+    _assert_origin_ok(payload.origin_url)
+
+    origin = payload.origin_url.rstrip("/")
+    success_url = f"{origin}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/product/{payload.product_id}"
+
+    metadata = {
+        "product_id": payload.product_id,
+        "product_name": product["name"],
+        "color": (payload.color or "")[:60],
+        "blank": "true" if priced["blank"] else "false",
+        "placements": ",".join(placements_clean)[:400],
+        "sizes": ",".join(line_breakdown)[:400],
+        "total_qty": str(total_qty),
+        "print_cost_per_garment": f"£{print_cost:.2f}",
+    }
+    if payload.design_meta:
+        for k, v in payload.design_meta.items():
+            metadata[f"design_{k}"] = str(v)[:400]
+
+    session = await create_checkout_session(
+        api_key=STRIPE_API_KEY,
+        amount=total_amount,
+        currency="gbp",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+        product_name=product["name"],
+    )
+
+    await db.payment_transactions.insert_one(
+        {
+            "id": str(uuid.uuid4()),
+            "session_id": session.id,
+            "product_id": payload.product_id,
+            "product_name": product["name"],
+            "color": payload.color,
+            "placements": placements_clean,
+            "blank": priced["blank"],
+            "size_qtys": size_qtys,
+            "total_quantity": total_qty,
+            "amount": total_amount,
+            "currency": "gbp",
+            "metadata": metadata,
+            "payment_status": "pending",
+            "status": "initiated",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+
+    return CheckoutResponse(url=session.url, session_id=session.id)
+
+
+@api_router.get("/checkout/status/{session_id}", response_model=CheckoutStatusOut)
+async def checkout_status(session_id: str, http_request: Request):
+    status_resp = await get_checkout_status(STRIPE_API_KEY, session_id)
+
+    existing = await db.payment_transactions.find_one({"session_id": session_id})
+    if existing and existing.get("payment_status") != status_resp.payment_status:
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {
+                "$set": {
+                    "payment_status": status_resp.payment_status,
+                    "status": status_resp.status,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+        )
+
+    return CheckoutStatusOut(
+        session_id=session_id,
+        status=status_resp.status,
+        payment_status=status_resp.payment_status,
+        amount_total=float(status_resp.amount_total or 0) / 100.0,
+        currency=status_resp.currency,
+    )
+
+
+# ---------- Multi-product cart checkout ----------
+# Server-side pricing per line — clients cannot spoof totals.
+class CartLineItem(BaseModel):
+    product_id: str
+    size_qtys: Dict[str, int]                     # {"M": 2, "L": 1}
+    color: Optional[str] = None
+    placements: Optional[List[str]] = None
+    blank: bool = False
+    design_meta: Optional[Dict[str, str]] = None  # DYO artwork ref, etc.
+
+
+class CartCheckoutRequest(BaseModel):
+    items: List[CartLineItem]
+    origin_url: str
+    customer_email: Optional[str] = None
+
+
+async def _resolve_line_pricing(
+    *,
+    product_id: str,
+    size_qtys: Dict[str, int],
+    placements: Optional[List[str]] = None,
+    blank: bool = False,
+    color: Optional[str] = None,
+    design_meta: Optional[Dict] = None,
+) -> Dict:
+    """Canonical per-line pricing — called by both single-item /checkout/session
+    and multi-line /checkout/cart-session so bulk-tier + upcharge maths is
+    guaranteed identical.
+
+    Returns:
+        {product, product_id, base_price, size_upcharges, size_qtys (validated),
+         placements_clean, print_cost, blank, color, total_qty, line_total,
+         breakdown, design_meta}
+    """
+    if product_id not in PRODUCTS:
+        raise HTTPException(400, f"Invalid product: {product_id}")
+    product = PRODUCTS[product_id]
+    base_price = float(product["price"])
+    size_upcharges: Dict[str, float] = product.get("size_upcharges", {}) or {}
+    allowed_sizes = set(product.get("sizes", []))
+
+    # Strip back-print for bottoms / shorts / joggers etc.
+    placements = list(placements or [])
+    if product_id in NO_BACK_PRINT_PRODUCT_IDS and placements:
+        placements = [p for p in placements if "back" not in (p or "").lower()]
+
+    # Resolve print cost using the same rules across every flow
+    if blank:
+        placements_clean: List[str] = []
+        print_cost = 0.0
+    elif product_id == "boxing-fight-tee":
+        placements_clean = [p for p in placements if p in FIGHT_NIGHT_ADDONS]
+        print_cost = round(sum(FIGHT_NIGHT_ADDONS[p]["price"] for p in placements_clean), 2)
+    elif product.get("category") == "team-kits":
+        placements_clean = [p for p in placements if p in TEAM_KIT_ADDONS]
+        print_cost = round(sum(TEAM_KIT_ADDONS[p]["price"] for p in placements_clean), 2)
+    elif product.get("category") == "leavers":
+        wanted = set(placements)
+        placements_clean = ["drawstring-bag"] if "drawstring-bag" in wanted else []
+        print_cost = LEAVERS_BAG_PRICE if "drawstring-bag" in wanted else 0.0
+    elif (design_meta or {}).get("flow") == "designer":
+        wanted = set(placements)
+        placements_clean = []
+        extra = 0.0
+        if "back-print" in wanted:
+            placements_clean.append("back-print")
+            extra += designer_back_print_price(base_price)
+        if "neck-label" in wanted:
+            placements_clean.append("neck-label")
+            extra += NECK_LABEL_PRICE
+        print_cost = round(extra, 2)
+    else:
+        placements_clean = _validate_placements(placements)
+        print_cost = round(sum(PLACEMENT_BY_ID[p]["price"] for p in placements_clean), 2)
+
+    # Validate sizes/qtys
+    resolved_qtys: Dict[str, int] = {}
+    for sz, q in (size_qtys or {}).items():
+        try:
+            q_int = int(q)
+        except (TypeError, ValueError):
+            continue
+        if q_int <= 0:
+            continue
+        if allowed_sizes and sz not in allowed_sizes:
+            raise HTTPException(400, f"Size '{sz}' not available for {product_id}")
+        resolved_qtys[sz] = q_int
+    if not resolved_qtys:
+        raise HTTPException(400, f"{product_id}: select at least one size")
+
+    total_qty = sum(resolved_qtys.values())
+    if total_qty < 1 or total_qty > 5000:
+        raise HTTPException(400, f"{product_id}: qty must be 1–5000")
+
+    # Bulk-tier pricing
+    if product_id == "boxing-fight-tee":
+        base_price = tier_unit_price(FIGHT_NIGHT_BULK_TIERS, base_price, total_qty)
+    elif product.get("category") == "leavers" and product_id != "leavers-drawstring-bag":
+        base_price = tier_unit_price(LEAVERS_BULK_TIERS_DEFAULT, base_price, total_qty)
+    elif product.get("bulk_pricing_enabled"):
+        ovr = product.get("bulk_pricing_overrides")
+        if ovr:
+            tiers_pct = sorted(
+                [(int(t["min_qty"]), float(t["pct"])) for t in ovr if "min_qty" in t and "pct" in t],
+                key=lambda x: -x[0],
+            )
+        else:
+            doc = await db.settings.find_one({"key": SETTINGS_KEY_BULK_DEFAULTS})
+            tiers_pct = doc["tiers"] if doc and "tiers" in doc else DEFAULT_BULK_TIERS_PCT
+            tiers_pct = sorted([(int(t[0]), float(t[1])) for t in tiers_pct], key=lambda x: -x[0])
+        base_price = apply_bulk_tier_pct(base_price, total_qty, tiers_pct)
+
+    line_total = 0.0
+    breakdown: List[str] = []
+    for sz, q in resolved_qtys.items():
+        unit = base_price + float(size_upcharges.get(sz, 0.0)) + print_cost
+        line_total += round(unit * q, 2)
+        breakdown.append(f"{sz}×{q}@£{unit:.2f}")
+    line_total = round(line_total, 2)
+
+    return {
+        "product": product,
+        "product_id": product_id,
+        "base_price": base_price,
+        "size_upcharges": size_upcharges,
+        "size_qtys": resolved_qtys,
+        "placements_clean": placements_clean,
+        "print_cost": print_cost,
+        "blank": blank or not placements_clean,
+        "color": color,
+        "total_qty": total_qty,
+        "line_total": line_total,
+        "breakdown": breakdown,
+        "design_meta": design_meta or {},
+    }
+
+
+async def _price_line_item(item: CartLineItem) -> Dict:
+    """Backwards-compatible wrapper — resolves the pricing for one CartLineItem
+    by delegating to the shared `_resolve_line_pricing()` helper."""
+    return await _resolve_line_pricing(
+        product_id=item.product_id,
+        size_qtys=item.size_qtys or {},
+        placements=item.placements,
+        blank=item.blank,
+        color=item.color,
+        design_meta=item.design_meta,
+    )
+
+
+
+def _assert_origin_ok(origin_url: str) -> None:
+    """Guard the Stripe success/cancel URL host — reject any origin outside
+    our production domain + preview environments. Prevents an attacker from
+    hijacking the checkout success redirect to steal session_ids."""
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(origin_url)
+    except Exception:
+        raise HTTPException(400, "Invalid origin_url")
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "origin_url must be http or https")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise HTTPException(400, "origin_url missing host")
+    allowed_suffixes = ("yourownprint.co.uk", "emergentagent.com", "localhost", "127.0.0.1")
+    if not any(host == s or host.endswith("." + s) for s in allowed_suffixes):
+        raise HTTPException(400, f"origin_url host not allowed: {host}")
+
+
+@api_router.post("/checkout/cart-session", response_model=CheckoutResponse)
+async def create_cart_checkout(payload: CartCheckoutRequest, http_request: Request):
+    """Combined Stripe session for a multi-line cart. Reprices every line server-side."""
+    if not payload.items:
+        raise HTTPException(400, "Cart is empty")
+    if len(payload.items) > 20:
+        raise HTTPException(400, "Cart limit is 20 lines — please split into two orders")
+    _assert_origin_ok(payload.origin_url)
+
+    priced = [await _price_line_item(item) for item in payload.items]
+    grand_total = round(sum(p["line_total"] for p in priced), 2)
+    total_qty = sum(p["total_qty"] for p in priced)
+
+    if grand_total < 0.5:
+        raise HTTPException(400, "Cart total below Stripe minimum (£0.50)")
+
+    origin = payload.origin_url.rstrip("/")
+    success_url = f"{origin}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/cart"
+
+    # Compact metadata — Stripe caps values at 500 chars each. Full breakdown is stored in Mongo below.
+    item_summary = " | ".join(
+        f"{p['product']['name']} ({sum(p['size_qtys'].values())})" for p in priced
+    )[:490]
+    metadata = {
+        "kind": "cart",
+        "items_count": str(len(priced)),
+        "total_qty": str(total_qty),
+        "items_summary": item_summary,
+    }
+
+    session = await create_checkout_session(
+        api_key=STRIPE_API_KEY,
+        amount=grand_total,
+        currency="gbp",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+        product_name="Your Own Print cart order",
+    )
+
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session.id,
+        "kind": "cart",
+        "customer_email": payload.customer_email,
+        "items": [
+            {
+                "product_id": p["product_id"],
+                "product_name": p["product"]["name"],
+                "color": p["color"],
+                "placements": p["placements_clean"],
+                "blank": p["blank"],
+                "size_qtys": p["size_qtys"],
+                "total_quantity": p["total_qty"],
+                "line_total": p["line_total"],
+                "breakdown": p["breakdown"],
+                "design_meta": p["design_meta"],
+            }
+            for p in priced
+        ],
+        "total_quantity": total_qty,
+        "amount": grand_total,
+        "currency": "gbp",
+        "metadata": metadata,
+        "payment_status": "pending",
+        "status": "initiated",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return CheckoutResponse(url=session.url, session_id=session.id)
+
+
+@api_router.post("/cart/price")
+async def price_cart(payload: CartCheckoutRequest):
+    """Repriced cart preview — used by the drawer to show the correct total incl. bulk tiers,
+    print upcharges, size upcharges. Does NOT create a Stripe session."""
+    if not payload.items:
+        return {"items": [], "grand_total": 0.0, "total_qty": 0}
+    if len(payload.items) > 20:
+        raise HTTPException(400, "Cart limit is 20 lines")
+    priced = [await _price_line_item(item) for item in payload.items]
+    grand_total = round(sum(p["line_total"] for p in priced), 2)
+    return {
+        "items": [
+            {
+                "product_id": p["product_id"],
+                "product_name": p["product"]["name"],
+                "product_image": p["product"].get("image"),
+                "size_qtys": p["size_qtys"],
+                "placements": p["placements_clean"],
+                "blank": p["blank"],
+                "color": p["color"],
+                "total_qty": p["total_qty"],
+                "line_total": p["line_total"],
+                "breakdown": p["breakdown"],
+                "unit_hint": round(p["line_total"] / p["total_qty"], 2) if p["total_qty"] else 0.0,
+            }
+            for p in priced
+        ],
+        "grand_total": grand_total,
+        "total_qty": sum(p["total_qty"] for p in priced),
+    }
+
+
+@api_router.post("/reviews", response_model=ReviewOut)
+async def create_review(payload: ReviewCreate):
+    if payload.product_id not in PRODUCTS:
+        raise HTTPException(400, "Unknown product_id")
+    if payload.rating < 1 or payload.rating > 5:
+        raise HTTPException(400, "Rating must be 1-5")
+    photos = []
+    for p in (payload.photos or [])[:4]:
+        if _photo_ok(p):
+            photos.append(p)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "product_id": payload.product_id,
+        "reviewer_name": payload.reviewer_name.strip()[:80] or "Anonymous",
+        "reviewer_email": payload.reviewer_email,
+        "rating": payload.rating,
+        "title": payload.title.strip()[:120],
+        "body": payload.body.strip()[:2000],
+        "photos": photos,
+        "verified": False,
+        "source": "native",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.reviews.insert_one(doc)
+    return ReviewOut(**{k: doc[k] for k in ReviewOut.model_fields.keys()})
+
+
+@api_router.get("/reviews/product/{product_id}")
+async def list_product_reviews(product_id: str, limit: int = 50):
+    if product_id not in PRODUCTS:
+        raise HTTPException(404, "Unknown product")
+    cursor = db.reviews.find({"product_id": product_id}).sort("created_at", -1).limit(limit)
+    items = []
+    total = 0
+    rating_sum = 0
+    async for r in cursor:
+        items.append({k: r.get(k) for k in ReviewOut.model_fields.keys()})
+        total += 1
+        rating_sum += int(r.get("rating", 0))
+    avg = round(rating_sum / total, 2) if total else 0
+    return {"product_id": product_id, "average": avg, "count": total, "reviews": items}
+
+
+@api_router.get("/reviews/aggregate")
+async def reviews_aggregate():
+    pipeline = [
+        {"$group": {"_id": "$product_id", "avg": {"$avg": "$rating"}, "count": {"$sum": 1}}}
+    ]
+    out = {}
+    async for doc in db.reviews.aggregate(pipeline):
+        out[doc["_id"]] = {"average": round(doc["avg"], 2), "count": doc["count"]}
+    return out
+
+
+@api_router.get("/reviews/recent")
+async def recent_reviews(limit: int = 12):
+    cursor = db.reviews.find({}).sort("created_at", -1).limit(limit)
+    items = []
+    async for r in cursor:
+        items.append({k: r.get(k) for k in ReviewOut.model_fields.keys()})
+    return items
+
+
+@api_router.post("/reviews/import-judgeme", dependencies=[Depends(require_admin)])
+async def import_judgeme(payload: JudgeMeImportRequest):
+    """Accepts a paste/upload of Judge.me reviews JSON (one-off migration).
+    Maps each review to one of our product IDs via product_id_map (judgeme key -> our id)
+    or falls back to default_product_id. Supports the standard Judge.me review object shape
+    AND the widget review shape.
+    """
+    imported = 0
     skipped = 0
-    
-    for template in all_templates:
-        body_url = template.get("body_image_url", "")
-        if "cloudinary" not in body_url:
+    pmap = payload.product_id_map or {}
+    for r in payload.reviews:
+        # Normalise — Judge.me review object fields
+        jm_pid = str(r.get("product_id") or r.get("product_external_id") or r.get("product_handle") or "")
+        jm_title_key = str(r.get("product_title") or "")
+        mapped = pmap.get(jm_pid) or pmap.get(jm_title_key) or payload.default_product_id
+        if not mapped or mapped not in PRODUCTS:
             skipped += 1
             continue
-        
-        # Find matching R2 URLs by filename pattern
-        matched = False
-        for pattern, (new_body, new_product) in template_map.items():
-            if pattern in body_url:
-                await db.templates.update_one(
-                    {"_id": template["_id"]},
-                    {"$set": {
-                        "body_image_url": new_body,
-                        "product_image_url": new_product,
-                    }}
-                )
-                updated += 1
-                matched = True
-                break
-        
-        if not matched:
-            logger.warning(f"No R2 match found for: {body_url}")
-    
-    return {"message": f"Fixed {updated} templates, {skipped} already on R2"}
-
-@api_router.post("/admin/templates/fix-urls")
-async def fix_template_urls(data: dict):
-    """Update specific template URLs by ID"""
-    fixes = data.get("fixes", [])
-    updated = 0
-    for fix in fixes:
-        template_id = fix.get("id")
-        if not template_id:
-            continue
-        result = await db.templates.update_one(
-            {"id": template_id},
-            {"$set": {
-                "body_image_url": fix.get("body_image_url"),
-                "product_image_url": fix.get("product_image_url"),
-            }}
-        )
-        if result.modified_count:
-            updated += 1
-    return {"message": f"Fixed {updated} template URLs"}
-
-@api_router.post("/admin/templates/bulk-import")
-async def bulk_import_templates(data: dict):
-    """Bulk import or update templates from R2 URLs"""
-    templates = data.get("templates", [])
-    if not templates:
-        raise HTTPException(status_code=400, detail="No templates provided")
-
-    inserted = 0
-    updated = 0
-    for t in templates:
-        name = t.get("name", "")
-        if not name:
-            continue
-        existing = await db.templates.find_one({"name": name})
+        rating = int(r.get("rating") or 5)
+        rating = max(1, min(5, rating))
+        body = str(r.get("body") or r.get("review_body") or r.get("content") or "")[:2000]
+        title = str(r.get("title") or r.get("review_title") or "Verified review")[:120]
+        reviewer = str(r.get("reviewer_name") or r.get("name") or r.get("author") or "Customer")[:80]
+        created = str(r.get("created_at") or r.get("date") or datetime.now(timezone.utc).isoformat())
+        pictures = r.get("pictures") or r.get("photos") or []
+        photos = []
+        for p in pictures[:4]:
+            if isinstance(p, dict):
+                u = p.get("urls", {}).get("original") or p.get("url") or p.get("original")
+                if u:
+                    photos.append(u)
+            elif isinstance(p, str):
+                photos.append(p)
         doc = {
-            "name": name,
-            "body_image_url": t.get("body_image_url", ""),
-            "product_image_url": t.get("product_image_url", ""),
-            "categories": t.get("categories", ["stag"]),
-            "active": True,
+            "id": str(uuid.uuid4()),
+            "product_id": mapped,
+            "reviewer_name": reviewer or "Customer",
+            "reviewer_email": None,
+            "rating": rating,
+            "title": title,
+            "body": body,
+            "photos": photos,
+            "verified": True,
+            "source": "judgeme",
+            "created_at": created,
+            "judgeme_id": r.get("id") or r.get("review_id"),
         }
-        if existing:
-            await db.templates.update_one({"name": name}, {"$set": doc})
-            updated += 1
-        else:
-            doc["id"] = str(uuid.uuid4())
-            await db.templates.insert_one(doc)
-            inserted += 1
+        await db.reviews.insert_one(doc)
+        imported += 1
+    return {"imported": imported, "skipped": skipped}
 
-    return {"message": f"Done — {inserted} inserted, {updated} updated"}
 
-# ============ ADMIN STAFF ORDERS ============
+# ---------- Designer (Design Your Own) endpoints ----------
+class DesignerSettings(BaseModel):
+    designer_enabled: bool = True
+    designer_image: str
+    designer_print_area: Dict[str, float]  # {x,y,w,h} percent
+    composition: Optional[str] = None
+    description_long: Optional[str] = None
+    use_cases: Optional[List[str]] = None
 
-@api_router.post("/admin/staff-order")
-async def create_staff_order(data: dict):
-    """Create a staff/custom order from the admin builder — no payment needed"""
-    order_number = f"STAFF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
-    order_id = str(uuid.uuid4())
 
-    order = {
-        "id": order_id,
-        "order_number": order_number,
-        "customer_name": data.get("customer_name", "Staff Order"),
-        "customer_email": "",
-        "customer_phone": "",
-        "items": [{
-            "templateName": data.get("template_name", ""),
-            "templateId": data.get("template_id", ""),
-            "headUrl": data.get("head_url", ""),
-            "originalPhotoUrl": data.get("original_photo_url", ""),
-            "titleText": data.get("title_text", ""),
-            "subtitleText": data.get("subtitle_text", ""),
-            "line3Text": data.get("line3_text", ""),
-            "headPlacement": data.get("head_placement", {}),
-            "size": "Custom",
-            "quantity": 1,
-            "price": 0,
-        }],
-        "total_amount": 0,
-        "status": "staff_order",
-        "order_type": "staff",
-        "gdpr_consent": True,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.orders.insert_one(order)
-    return {"order_id": order_id, "order_number": order_number}
+ALLOWED_PLACEMENT_OPTIONS = ["left-breast", "right-breast", "full-front", "back-print", "left-sleeve", "right-sleeve", "neck-label"]
 
-# ============ ADMIN PAYMENT LINKS ============
 
-@api_router.post("/admin/payment-links")
-async def create_payment_link(data: dict):
-    """Generate a Stripe checkout link for a custom WhatsApp order"""
-    if not stripe.api_key:
-        raise HTTPException(status_code=500, detail="Stripe not configured")
+class ProductMeta(BaseModel):
+    brand: Optional[str] = None
+    sku: Optional[str] = None
+    description_full: Optional[str] = None
+    size_guide_image: Optional[str] = None
+    size_guide_table: Optional[List[Dict]] = None
+    bulk_pricing_enabled: bool = False
+    bulk_pricing_overrides: Optional[List[Dict]] = None
+    allowed_placements: Optional[List[str]] = None
+    workforce_eligible: Optional[bool] = None
+    also_bought: Optional[List[str]] = None
+    match_with: Optional[List[str]] = None
+    image_gallery: Optional[List[str]] = None
+    specials_eligible: Optional[bool] = None
+    gender_fit: Optional[str] = None  # mens | womens | unisex | kids
+    industry_tags: Optional[List[str]] = None
 
-    customer_name = data.get("customer_name", "")
-    customer_email = data.get("customer_email", "")
-    customer_phone = data.get("customer_phone", "")
-    description = data.get("description", "Custom Order")
-    amount = float(data.get("amount", 0))
-    send_email = data.get("send_email", True)
 
-    if amount <= 0:
-        raise HTTPException(status_code=400, detail="Invalid amount")
+GENDER_FIT_OPTIONS = ["mens", "womens", "unisex", "kids"]
+INDUSTRY_SLUGS = ["trades", "hospitality", "healthcare", "beauty", "construction", "logistics", "fitness", "cleaning", "hair-beauty"]
+INDUSTRIES_CATALOGUE = [
+    {"slug": "healthcare", "title": "Healthcare", "subtitle": "Clinics, dental, mobile carers", "hero_image": "https://images.pexels.com/photos/4173324/pexels-photo-4173324.jpeg", "blurb": "Polos, tunics and sweatshirts customers recognise — soft fabrics, clean print, easy on hot washes."},
+    {"slug": "construction-trades", "title": "Construction & Trades", "subtitle": "Builders, sparks, plumbers, joiners, site crews", "hero_image": "https://images.pexels.com/photos/8961331/pexels-photo-8961331.jpeg", "blurb": "Hi-vis vests, workwear tees, jackets and trousers that survive site life. EN ISO 20471 options ready to print."},
+    {"slug": "retail", "title": "Retail", "subtitle": "Shops, garden centres, market stalls", "hero_image": "https://images.pexels.com/photos/1884581/pexels-photo-1884581.jpeg", "blurb": "On-brand polos and tees that make your team unmistakable on the shop floor. Tidy logo print on the chest."},
+    {"slug": "security", "title": "Security", "subtitle": "Door staff, mobile patrol, events", "hero_image": "https://images.pexels.com/photos/35562107/pexels-photo-35562107.png", "blurb": "Bold 'SECURITY' prints front and back. Polos, softshells and hi-vis kit — printed in the UK and ready quickly."},
+    {"slug": "corporate", "title": "Corporate", "subtitle": "Offices, agencies, professional services", "hero_image": "https://images.pexels.com/photos/3184465/pexels-photo-3184465.jpeg", "blurb": "Smart polos, jumpers and softshells for client days, exhibitions and team away-days. Embroidery or print."},
+    {"slug": "sports-fitness", "title": "Sports & Fitness", "subtitle": "Gyms, PTs, coaches, clubs", "hero_image": "https://images.pexels.com/photos/2261477/pexels-photo-2261477.jpeg", "blurb": "Performance tees, hoodies, joggers and leggings cut for the gym floor. Crisp prints, full-range movement."},
+    {"slug": "industrial", "title": "Industrial", "subtitle": "Warehousing, manufacturing, fabrication, logistics", "hero_image": "https://images.pexels.com/photos/4391483/pexels-photo-4391483.jpeg", "blurb": "Heavy-cotton workwear, hi-vis and softshells built for the floor. Reorder in any quantity."},
+    {"slug": "beauty-wellness", "title": "Beauty & Wellness", "subtitle": "Salons, spas, beauticians, hair & barbering, holistic studios", "hero_image": "https://images.pexels.com/photos/3997991/pexels-photo-3997991.jpeg", "blurb": "Branded tees, aprons and sweatshirts that look as polished as the treatments. Statement prints land beautifully."},
+    {"slug": "cleaning", "title": "Cleaning & Maintenance", "subtitle": "Cleaning crews, facilities, janitorial", "hero_image": "https://images.pexels.com/photos/4099235/pexels-photo-4099235.jpeg", "blurb": "Identifiable, easy-care polos and tees. Branded right, your team is recognisable on every site."},
+    {"slug": "hospitality-catering", "title": "Hospitality & Catering", "subtitle": "Cafés, bars, pubs, restaurants, mobile caterers", "hero_image": "https://images.pexels.com/photos/3007355/pexels-photo-3007355.jpeg", "blurb": "Smart polos, tees and aprons that look right behind the bar and front of house. Tidy logo print on the chest."},
 
-    # Create order in DB
-    order_number = f"PT-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
-    order = {
-        "id": str(uuid.uuid4()),
-        "order_number": order_number,
-        "customer_name": customer_name,
-        "customer_email": customer_email,
-        "customer_phone": customer_phone,
-        "items": [{"templateName": description, "price": amount, "quantity": 1, "size": "Custom"}],
-        "total_amount": amount,
-        "status": "pending_payment",
-        "order_type": "custom_payment_link",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "gdpr_consent": True,
-    }
-    await db.orders.insert_one(order)
+    # Back-compat aliases (legacy routes still resolve)
+    {"slug": "trades", "title": "Trades", "subtitle": "Builders, sparks, plumbers, joiners", "hero_image": "https://images.pexels.com/photos/8961326/pexels-photo-8961326.jpeg", "blurb": "Hard-wearing tees, hoodies and hi-vis kitted out with your logo. Built for site, washed at 60°.", "alias_of": "construction-trades"},
+    {"slug": "hospitality", "title": "Hospitality", "subtitle": "Cafés, bars, pubs, restaurants", "hero_image": "https://images.pexels.com/photos/3007355/pexels-photo-3007355.jpeg", "blurb": "Smart polos and tees that look right behind the bar and front of house. Tidy logo print on the chest.", "alias_of": "hospitality-catering"},
+    {"slug": "beauty", "title": "Beauty & Spa", "subtitle": "Salons, beauticians, holistic studios", "hero_image": "https://images.pexels.com/photos/3997991/pexels-photo-3997991.jpeg", "blurb": "Branded tees and sweatshirts that look as polished as the treatments. Tone-on-tone prints land beautifully.", "alias_of": "beauty-wellness"},
+    {"slug": "construction", "title": "Construction", "subtitle": "Site crews, foremen, contractors", "hero_image": "https://images.pexels.com/photos/8961331/pexels-photo-8961331.jpeg", "blurb": "Hi-vis vests, workwear tees and jackets that survive site life. EN ISO 20471 compliant options ready to print.", "alias_of": "construction-trades"},
+    {"slug": "logistics", "title": "Logistics & Couriers", "subtitle": "Delivery, warehouse, fleets", "hero_image": "https://images.pexels.com/photos/4391483/pexels-photo-4391483.jpeg", "blurb": "Comfortable polos, softshells and hi-vis tops branded with your fleet name. Reorder in any quantity.", "alias_of": "industrial"},
+    {"slug": "fitness", "title": "Fitness & Coaching", "subtitle": "PT studios, gyms, sports coaches", "hero_image": "https://images.pexels.com/photos/2261477/pexels-photo-2261477.jpeg", "blurb": "Performance tees, hoodies and joggers fit for the gym floor. Crisp prints, full-range movement.", "alias_of": "sports-fitness"},
+    {"slug": "hair-beauty", "title": "Hair & Barbering", "subtitle": "Barbers, hairdressers, mobile stylists", "hero_image": "https://images.pexels.com/photos/3998365/pexels-photo-3998365.jpeg", "blurb": "Statement tees, polos and aprons that bring the salon brand to life. Style as sharp as the cuts.", "alias_of": "beauty-wellness"},
+]
 
-    # Create Stripe checkout session
+
+# ---------- Sports & Fitness Teams catalogue (SEO landings) ----------
+SPORTS_TEAMS_CATALOGUE = [
+    {"slug": "football", "title": "Football Kits", "h1": "Custom Football Kits, Printed in the UK", "subtitle": "Jerseys, shorts, socks — match-day ready",
+     "hero_image": "https://images.pexels.com/photos/47730/the-ball-stadion-football-the-pitch-47730.jpeg",
+     "intro": "From Sunday League to academy squads — we print and ship full football kits with your crest, sponsor, names and numbers. UK printed, fast turnaround, low minimums.",
+     "seo_paragraph": "Our custom football kits use breathable, sublimation-friendly performance fabric cut for movement. Add a club badge, front sponsor, sleeve sponsors, player names and squad numbers — all baked into the price. We handle artwork, mock-ups and proofs in-house in the UK, so your team gets match-ready quicker.",
+     "faqs": [
+       {"q": "What's the minimum order for a custom football kit?", "a": "There's no minimum — order one kit or fifty. Bulk discounts kick in from 10+ kits."},
+       {"q": "How long until match day?", "a": "Most full football kits ship in 7–10 working days from artwork approval. Rush options available on request."},
+       {"q": "Can I add a sponsor on the back?", "a": "Yes — front sponsor, sleeve sponsors and a small back-of-shorts logo are all supported."},
+     ],
+     "product_ids": ["football-jersey", "football-shorts", "football-kit-bundle", "football-premium-bundle", "football-kit-front-only", "football-premium-front-only", "training-tee", "training-tracksuit"],
+    },
+    {"slug": "rugby", "title": "Rugby Kits", "h1": "Custom Rugby Kits — Heavy-Grade Match Shirts",
+     "subtitle": "Match shirts, training tops, club tracksuits",
+     "hero_image": "https://images.pexels.com/photos/342361/pexels-photo-342361.jpeg",
+     "intro": "Reinforced rugby shirts built to take a battering. Club crest, sponsor, player names and squad numbers baked into the price. UK printed, ready in 7–10 days.",
+     "seo_paragraph": "Our rugby shirts use heavy-grade fabric with a reinforced collar and twin-needle seams — designed to survive line-outs and laundry day. Add badges, sponsors and back numbers; we'll deliver match-ready kit for any age group, from U7s to seniors.",
+     "faqs": [
+       {"q": "Are kits available in junior sizes?", "a": "Yes — full junior size range from 5–6 years up to 12–13 plus the adult range."},
+       {"q": "Can you replicate our existing crest?", "a": "Absolutely — send us any file (JPG, PNG, PDF, vector) and we'll mock it up for free."},
+       {"q": "Do you do training shirts as well?", "a": "Yes — match shirts, training tees and full tracksuits all under one order."},
+     ],
+     "product_ids": ["rugby-shirt", "rugby-kit-bundle", "rugby-kit-front-only", "training-tee", "training-tracksuit", "sports-tee"],
+    },
+    {"slug": "gyms", "title": "Gym Kit & Branded Apparel", "h1": "Branded Kit for Gyms — Built for the Floor",
+     "subtitle": "Tees, hoodies, joggers, leggings — branded for your gym",
+     "hero_image": "https://images.pexels.com/photos/2261477/pexels-photo-2261477.jpeg",
+     "intro": "Branded gym kit your members will actually want to wear. Statement prints, soft fabrics, performance fits — and a price that lets you mark them up.",
+     "seo_paragraph": "Whether you run a CrossFit box, a strength gym, a HYROX squad or a high-street commercial gym — branded apparel turns your members into walking billboards. Our gym-ready kit covers tees, hoodies, joggers, leggings and shorts in performance-friendly fabrics. UK printed, low minimums, bulk discounts.",
+     "faqs": [
+       {"q": "Can I sell these to my members?", "a": "Yes — we set you up with bulk pricing so you can mark them up and sell. Just upload your logo, choose your colours and order."},
+       {"q": "Do you do front and back prints?", "a": "Yes — front breast logo plus a larger back print are both included on most products."},
+       {"q": "What's the lead time on a bulk gym kit order?", "a": "Typically 7–10 working days from artwork approval, faster on smaller orders."},
+     ],
+     "product_ids": ["personalised-tee", "personalised-hoodie", "joggers", "performance-leggings", "gym-shorts", "training-tee", "sports-tee"],
+    },
+    {"slug": "personal-trainers", "title": "Personal Trainer Kit", "h1": "Personal Trainer Kit — Branded For Your Studio",
+     "subtitle": "Coach polos, performance tees, hoodies — sorted",
+     "hero_image": "https://images.pexels.com/photos/4720234/pexels-photo-4720234.jpeg",
+     "intro": "Look the part on session day. Branded coach polos, training tees, hoodies and joggers — printed with your logo and ready to wear.",
+     "seo_paragraph": "Personal trainers, group coaches and online coaches need kit that travels well, washes hot and looks professional in client photos. We print PT-friendly performance fabrics with your logo on the chest, name on the sleeve, and your slogan on the back — your call.",
+     "faqs": [
+       {"q": "Can I order just one or two pieces?", "a": "Yes — no minimum. Most PTs start with a tee + hoodie + polo set."},
+       {"q": "Will my logo look right on dark colours?", "a": "Yes — we'll mock it up for free on any colour before you commit, so there's no nasty surprises."},
+       {"q": "Can I add my Instagram handle?", "a": "Of course — pop it under the logo or on the sleeve."},
+     ],
+     "product_ids": ["personalised-tee", "polo-shirt", "personalised-hoodie", "joggers", "training-tee", "sports-tee", "performance-leggings"],
+    },
+    {"slug": "boxing-gyms", "title": "Boxing Gym Kit", "h1": "Boxing Gym Kit — Walk-out Tees, Hoodies & More",
+     "subtitle": "Fight night tees, gym hoodies, sponsor shirts",
+     "hero_image": "https://images.pexels.com/photos/9311461/pexels-photo-9311461.jpeg",
+     "intro": "Branded kit for boxing gyms, white-collar nights and amateur clubs. Fight night sponsor tees, gym hoodies, training kit — printed in the UK and ready quickly.",
+     "seo_paragraph": "Boxing gyms run on identity. Our Fight Night Sponsor Tees carry your main sponsor plus multiple supporting logos at the back, while branded hoodies, walk-out tees and gym staples cover the day-to-day. Low minimums and quick turnaround.",
+     "faqs": [
+       {"q": "Can you handle multiple sponsor logos for fight night?", "a": "Yes — we routinely lay up 4–8 sponsor logos on a single tee, with a free mock-up before approval."},
+       {"q": "How quick can you turn around a fight night order?", "a": "Standard turnaround is 7–10 days; we'll often beat that for fight cards — speak to us if you're tight on time."},
+       {"q": "Do you do walk-out hoodies too?", "a": "Yes — branded gym hoodies, joggers, beanies, drawstring bags — anything you need to outfit your corner."},
+     ],
+     "product_ids": ["boxing-fight-tee", "personalised-tee", "personalised-hoodie", "joggers", "sports-tee", "training-tee"],
+    },
+    {"slug": "thai-boxing", "title": "Thai Boxing Gym Kit", "h1": "Muay Thai Gym Kit & Custom Shorts",
+     "subtitle": "Branded Thai shorts, walk-out tees, gym hoodies",
+     "hero_image": "https://images.pexels.com/photos/4761779/pexels-photo-4761779.jpeg",
+     "intro": "Traditional-cut Muay Thai shorts printed in vibrant satin, branded gym tees and hoodies — kit out your fighters and your members.",
+     "seo_paragraph": "Muay Thai gyms work hard for their identity — and our traditional-cut shorts, sublimated in vibrant colours, do them justice. Add custom names, club logo, sponsor logos and gym branding on full-print shorts, plus matching walk-out tees and hoodies.",
+     "faqs": [
+       {"q": "Can I have my fighter's name on the shorts?", "a": "Yes — names, gym logo, sponsor logos — all baked into the print."},
+       {"q": "Do you offer kids' Thai shorts?", "a": "Yes — we cover junior sizes from 7–8 up to adult."},
+       {"q": "How vibrant is the print on satin?", "a": "Very — sublimation print on satin makes colours pop. We always send a mock-up before printing."},
+     ],
+     "product_ids": ["muay-thai-shorts", "boxing-fight-tee", "personalised-tee", "personalised-hoodie", "training-tee"],
+    },
+    {"slug": "kick-boxing", "title": "Kickboxing Gym Kit", "h1": "Kickboxing Gym Kit, Shorts & Walk-out Tees",
+     "subtitle": "Custom kickboxing shorts, club hoodies, training kit",
+     "hero_image": "https://images.pexels.com/photos/4761787/pexels-photo-4761787.jpeg",
+     "intro": "Branded kickboxing shorts, walk-out tees and club hoodies. Sublimated, durable, ready for the ring or class.",
+     "seo_paragraph": "Kickboxing gyms running anything from after-school junior classes to amateur fight cards rely on kit that survives the bag work and looks sharp on social. We print full sublimated kickboxing shorts, branded tees and hoodies with your gym logo, fighter names and sponsor logos.",
+     "faqs": [
+       {"q": "Can I get the same design on both shorts and tee?", "a": "Yes — we line up matching prints across the kit so the whole squad looks unified."},
+       {"q": "Will the print survive grappling?", "a": "Yes — sublimation prints sit inside the fibres, not on top, so they don't crack or peel."},
+       {"q": "Minimums?", "a": "No minimum — order one set or fifty."},
+     ],
+     "product_ids": ["fight-shorts", "muay-thai-shorts", "boxing-fight-tee", "personalised-tee", "personalised-hoodie", "training-tee"],
+    },
+    {"slug": "dance-studios", "title": "Dance Studio Apparel", "h1": "Custom Dance Studio Apparel & Crew Kit",
+     "subtitle": "Studio tees, hoodies, leggings, joggers — branded",
+     "hero_image": "https://images.pexels.com/photos/4250534/pexels-photo-4250534.jpeg",
+     "intro": "Branded dance studio kit your students, parents and crew will love. Soft tees, comfy hoodies, performance leggings and joggers — printed with your studio's logo.",
+     "seo_paragraph": "From baby ballet to street dance crews — every studio needs branded kit. Our soft-drape tees, hoodies, joggers and leggings carry your studio's logo, dancer's name and crew slogans cleanly. Parents and dancers love them, and they make brilliant studio fundraisers too.",
+     "faqs": [
+       {"q": "Can I sell these to my parents?", "a": "Yes — pre-order forms work brilliantly. We offer bulk pricing for orders of 10+."},
+       {"q": "Do you do small sizes for kids?", "a": "Yes — junior sizes from 3–4 up to 12–13 across most styles."},
+       {"q": "Can dancers have their name on the back?", "a": "Yes — names, year groups, studio colours, crew names — your call."},
+     ],
+     "product_ids": ["dance-tee", "personalised-hoodie", "joggers", "performance-leggings", "personalised-tee", "kids-tee"],
+    },
+]
+
+
+class DesignerArtwork(BaseModel):
+    product_id: str
+    artwork_png: str           # data URL / base64 (front, transparent, print-quality)
+    preview_png: Optional[str] = None  # smaller preview (front)
+    back_png: Optional[str] = None             # data URL / base64 (back, transparent, print-quality)
+    back_preview_png: Optional[str] = None     # smaller preview (back)
+    neck_label_pngs: Optional[Dict[str, str]] = None         # {"M": data-url, "L": data-url, ...}
+    neck_label_preview_pngs: Optional[Dict[str, str]] = None  # smaller previews per size
+    items_count: int = 0
+    back_items_count: int = 0
+    neck_label_items_count: int = 0
+    width: Optional[int] = None
+    height: Optional[int] = None
+    session_id: Optional[str] = None
+
+
+def designer_back_print_price(unit_price: float) -> float:
+    """60% of unit price, snapped to nearest £.99 (with a £0.99 floor)."""
+    return max(0.99, round(unit_price * 0.6) - 0.01)
+
+
+NECK_LABEL_PRICE = 1.50  # Flat per-garment DTF neck-label upcharge
+
+USE_CASE_OPTIONS = ["workwear", "branded-to-sell", "daily-use", "sports", "kids", "eco"]
+
+# ----- Per-flow bulk pricing tiers (ascending threshold, descending unit price) -----
+# Applied when product_id matches and total qty meets the threshold.
+FIGHT_NIGHT_BULK_TIERS = [(25, 9.99), (10, 10.99)]   # tee base £11.99 → £10.99 @ 10+, £9.99 @ 25+
+LEAVERS_BULK_TIERS_DEFAULT = [(100, 15.99), (60, 16.99), (30, 17.99), (20, 19.99)]
+
+LEAVERS_BAG_PRICE = 3.99  # printed drawstring carry-all addon, per garment
+
+# Generic per-product bulk-discount tiers (% off base price, snapped to nearest £.99)
+DEFAULT_BULK_TIERS_PCT: List[Tuple[int, float]] = [(200, 35.0), (100, 28.0), (25, 18.0), (10, 10.0)]
+SETTINGS_KEY_BULK_DEFAULTS = "bulk_tiers_pct_default"
+
+
+def snap_to_99(price: float) -> float:
+    """Snap to the nearest £x.99 with a £0.99 floor (e.g. 5.42 → 4.99, 5.51 → 5.99)."""
+    return max(0.99, round(price) - 0.01)
+
+
+def apply_bulk_tier_pct(base_price: float, total_qty: int, tiers_pct: List[Tuple[int, float]]) -> float:
+    """Return discounted unit price using the highest matching % tier; tiers must be desc by qty."""
+    for threshold, pct in tiers_pct:
+        if total_qty >= threshold:
+            return snap_to_99(base_price * (1.0 - pct / 100.0))
+    return base_price
+
+
+def tier_unit_price(tiers: List[Tuple[int, float]], default_price: float, total_qty: int) -> float:
+    """Return the highest-discount tier matching total_qty, else default."""
+    for threshold, price in tiers:  # tiers must be sorted desc by threshold
+        if total_qty >= threshold:
+            return price
+    return default_price
+
+
+async def _merge_designer_overrides():
+    """Read /designer_settings collection and overlay onto in-memory PRODUCTS."""
+    async for doc in db.designer_settings.find({}):
+        pid = doc.get("product_id")
+        if pid in PRODUCTS:
+            for k in ("designer_enabled", "designer_image", "designer_print_area",
+                     "composition", "description_long", "use_cases"):
+                if k in doc and doc[k] is not None:
+                    PRODUCTS[pid][k] = doc[k]
+    # Product meta overlay (brand/SKU/size guide/bulk pricing)
+    async for doc in db.product_meta.find({}):
+        pid = doc.get("product_id")
+        if pid in PRODUCTS:
+            for k in ("brand", "sku", "description_full", "size_guide_image", "size_guide_table",
+                     "bulk_pricing_enabled", "bulk_pricing_overrides", "allowed_placements",
+                     "workforce_eligible", "also_bought", "match_with", "image_gallery", "specials_eligible",
+                     "gender_fit", "industry_tags"):
+                if k in doc and doc[k] is not None:
+                    PRODUCTS[pid][k] = doc[k]
+
+
+@app.on_event("startup")
+async def _designer_startup():
     try:
-        session = stripe.checkout.Session.create(
-            payment_method_types=["card"],
-            line_items=[{
-                "price_data": {
-                    "currency": "gbp",
-                    "product_data": {
-                        "name": "Custom T-Shirt Order — Swap My Face Tees",
-                        "description": description,
-                    },
-                    "unit_amount": int(amount * 100),
-                },
-                "quantity": 1,
-            }],
-            mode="payment",
-            customer_email=customer_email or None,
-            success_url=f"{os.environ.get('FRONTEND_URL', 'https://www.swapmyface.co.uk')}/cart?session_id={{CHECKOUT_SESSION_ID}}",
-            cancel_url=f"{os.environ.get('FRONTEND_URL', 'https://www.swapmyface.co.uk')}/cart",
-            metadata={"order_id": order["id"], "order_type": "custom_payment_link"},
+        await _merge_designer_overrides()
+    except Exception as e:
+        logger.error(f"designer overlay failed: {e}")
+
+
+@api_router.get("/designer/products")
+async def list_designer_products():
+    """Products available in the Design Your Own canvas."""
+    out = []
+    for p in PRODUCTS.values():
+        if p.get("designer_enabled"):
+            out.append({
+                "id": p["id"],
+                "name": p["name"],
+                "price": p["price"],
+                "image": p.get("designer_image") or p["image"],
+                "print_area": p.get("designer_print_area") or DEFAULT_PRINT_AREA,
+                "sizes": p.get("sizes", []),
+                "size_upcharges": p.get("size_upcharges", {}),
+                "back_print_price": designer_back_print_price(float(p["price"])),
+                "neck_label_price": NECK_LABEL_PRICE,
+                "composition": p.get("composition"),
+                "description_long": p.get("description_long"),
+                "use_cases": p.get("use_cases") or [],
+            })
+    return out
+
+
+@api_router.get("/designer/use-cases")
+async def list_use_cases():
+    return USE_CASE_OPTIONS
+
+
+@api_router.get("/admin/designer-products", dependencies=[Depends(require_admin)])
+async def admin_list_designer_products():
+    """Admin view — ALL products with their current designer settings."""
+    out = []
+    for p in PRODUCTS.values():
+        out.append({
+            "id": p["id"],
+            "name": p["name"],
+            "category": p["category"],
+            "main_image": p["image"],
+            "designer_enabled": bool(p.get("designer_enabled")),
+            "designer_image": p.get("designer_image") or p["image"],
+            "designer_print_area": p.get("designer_print_area") or DEFAULT_PRINT_AREA,
+            "composition": p.get("composition") or "",
+            "description_long": p.get("description_long") or "",
+            "use_cases": p.get("use_cases") or [],
+        })
+    return out
+
+
+@api_router.patch("/admin/designer-products/{product_id}", dependencies=[Depends(require_admin)])
+async def update_designer_settings(product_id: str, payload: DesignerSettings):
+    if product_id not in PRODUCTS:
+        raise HTTPException(404, "Product not found")
+    pa = payload.designer_print_area
+    for k in ("x", "y", "w", "h"):
+        if k not in pa:
+            raise HTTPException(400, f"print_area missing '{k}'")
+        if not (0 <= float(pa[k]) <= 100):
+            raise HTTPException(400, f"print_area '{k}' must be 0-100")
+    use_cases = payload.use_cases or []
+    for uc in use_cases:
+        if uc not in USE_CASE_OPTIONS:
+            raise HTTPException(400, f"unknown use_case '{uc}'. Allowed: {USE_CASE_OPTIONS}")
+    doc = {
+        "product_id": product_id,
+        "designer_enabled": payload.designer_enabled,
+        "designer_image": payload.designer_image,
+        "designer_print_area": pa,
+        "composition": (payload.composition or None),
+        "description_long": (payload.description_long or None),
+        "use_cases": use_cases,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.designer_settings.update_one({"product_id": product_id}, {"$set": doc}, upsert=True)
+    # Apply to in-memory PRODUCTS so it's immediately reflected.
+    PRODUCTS[product_id]["designer_enabled"] = payload.designer_enabled
+    PRODUCTS[product_id]["designer_image"] = payload.designer_image
+    PRODUCTS[product_id]["designer_print_area"] = pa
+    if payload.composition is not None:
+        PRODUCTS[product_id]["composition"] = payload.composition or None
+    if payload.description_long is not None:
+        PRODUCTS[product_id]["description_long"] = payload.description_long or None
+    PRODUCTS[product_id]["use_cases"] = use_cases
+    return {"ok": True}
+
+
+@api_router.post("/designer/artwork")
+async def save_designer_artwork(payload: DesignerArtwork):
+    """Save a composed transparent PNG (and optional preview) for an order."""
+    if payload.product_id not in PRODUCTS:
+        raise HTTPException(400, "Unknown product_id")
+    if not payload.artwork_png or len(payload.artwork_png) > 6_000_000:
+        raise HTTPException(400, "artwork_png missing or too large")
+    if payload.back_png and len(payload.back_png) > 6_000_000:
+        raise HTTPException(400, "back_png too large")
+    # Neck-label PNGs are smaller — cap each at 2MB to keep the doc reasonable
+    for pngs in ((payload.neck_label_pngs or {}), (payload.neck_label_preview_pngs or {})):
+        for sz, data in pngs.items():
+            if data and len(data) > 2_000_000:
+                raise HTTPException(400, f"neck_label_pngs['{sz}'] too large")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "product_id": payload.product_id,
+        "artwork_png": payload.artwork_png,
+        "preview_png": payload.preview_png,
+        "back_png": payload.back_png,
+        "back_preview_png": payload.back_preview_png,
+        "neck_label_pngs": payload.neck_label_pngs,
+        "neck_label_preview_pngs": payload.neck_label_preview_pngs,
+        "items_count": payload.items_count,
+        "back_items_count": payload.back_items_count,
+        "neck_label_items_count": payload.neck_label_items_count,
+        "width": payload.width,
+        "height": payload.height,
+        "session_id": payload.session_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.designer_artwork.insert_one(doc)
+    return {"id": doc["id"]}
+
+
+@api_router.get("/designer/artwork/{artwork_id}")
+async def get_designer_artwork(artwork_id: str):
+    """Retrieve a saved artwork — used by fulfilment/admin."""
+    doc = await db.designer_artwork.find_one({"id": artwork_id})
+    if not doc:
+        raise HTTPException(404, "Artwork not found")
+    return {k: doc.get(k) for k in (
+        "id", "product_id", "artwork_png", "preview_png",
+        "back_png", "back_preview_png",
+        "neck_label_pngs", "neck_label_preview_pngs",
+        "items_count", "back_items_count", "neck_label_items_count",
+        "width", "height", "session_id", "created_at",
+    )}
+
+
+# ---------- Bulk tiers (public) ----------
+@api_router.get("/bulk-tiers/fight-night")
+async def get_fight_night_tiers():
+    return {
+        "base_price": float(PRODUCTS["boxing-fight-tee"]["price"]),
+        "tiers": [{"min_qty": t, "unit_price": p} for t, p in FIGHT_NIGHT_BULK_TIERS],
+    }
+
+
+# ---------- Generic bulk pricing ----------
+async def _get_bulk_defaults() -> List[Tuple[int, float]]:
+    doc = await db.settings.find_one({"key": SETTINGS_KEY_BULK_DEFAULTS})
+    if doc and "tiers" in doc:
+        return sorted([(int(t[0]), float(t[1])) for t in doc["tiers"]], key=lambda x: -x[0])
+    return DEFAULT_BULK_TIERS_PCT
+
+
+@api_router.get("/bulk-tiers/defaults")
+async def get_bulk_defaults():
+    tiers = await _get_bulk_defaults()
+    return {"tiers": [{"min_qty": q, "pct": p} for q, p in tiers]}
+
+
+@api_router.patch("/admin/bulk-tiers/defaults", dependencies=[Depends(require_admin)])
+async def update_bulk_defaults(payload: Dict):
+    tiers = payload.get("tiers")
+    if not isinstance(tiers, list) or not tiers:
+        raise HTTPException(400, "tiers must be a non-empty list")
+    cleaned = []
+    for t in tiers:
+        try:
+            q = int(t["min_qty"])
+            p = float(t["pct"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, "each tier needs min_qty (int) + pct (number)")
+        if q < 1 or not (0 <= p <= 90):
+            raise HTTPException(400, "min_qty >=1; pct 0-90")
+        cleaned.append([q, p])
+    await db.settings.update_one(
+        {"key": SETTINGS_KEY_BULK_DEFAULTS},
+        {"$set": {"key": SETTINGS_KEY_BULK_DEFAULTS, "tiers": cleaned, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+@api_router.get("/bulk-tiers/product/{product_id}")
+async def get_product_bulk_tiers(product_id: str):
+    """Resolved bulk-pricing preview for a product — used by the PDP ladder."""
+    p = PRODUCTS.get(product_id)
+    if not p:
+        raise HTTPException(404, "Product not found")
+    base_price = float(p["price"])
+    # Fight Night & Leavers use absolute tiers (not % based)
+    if product_id == "boxing-fight-tee":
+        return {"mode": "absolute", "base_price": base_price,
+                "tiers": [{"min_qty": q, "unit_price": up, "savings_per_unit": round(base_price - up, 2)} for q, up in FIGHT_NIGHT_BULK_TIERS]}
+    if p.get("category") == "leavers" and product_id != "leavers-drawstring-bag":
+        return {"mode": "absolute", "base_price": base_price,
+                "tiers": [{"min_qty": q, "unit_price": up, "savings_per_unit": round(base_price - up, 2)} for q, up in LEAVERS_BULK_TIERS_DEFAULT]}
+    if not p.get("bulk_pricing_enabled"):
+        return {"mode": "none", "base_price": base_price, "tiers": []}
+    ovr = p.get("bulk_pricing_overrides")
+    if ovr:
+        tiers_pct = sorted([(int(t["min_qty"]), float(t["pct"])) for t in ovr if "min_qty" in t and "pct" in t], key=lambda x: -x[0])
+    else:
+        tiers_pct = await _get_bulk_defaults()
+    return {
+        "mode": "percent", "base_price": base_price,
+        "tiers": [
+            {"min_qty": q, "pct": pct, "unit_price": snap_to_99(base_price * (1 - pct / 100)),
+             "savings_per_unit": round(base_price - snap_to_99(base_price * (1 - pct / 100)), 2)}
+            for q, pct in tiers_pct
+        ],
+    }
+
+
+# ---------- Product meta (brand, SKU, size guide, bulk pricing flag) ----------
+@api_router.get("/admin/products", dependencies=[Depends(require_admin)])
+async def admin_list_all_products():
+    """Admin overview of all products with editable meta fields."""
+    out = []
+    for p in PRODUCTS.values():
+        out.append({
+            "id": p["id"], "name": p["name"], "price": float(p["price"]),
+            "category": p["category"], "image": p["image"],
+            "brand": p.get("brand") or "",
+            "sku": p.get("sku") or "",
+            "description_full": p.get("description_full") or "",
+            "size_guide_image": p.get("size_guide_image") or "",
+            "size_guide_table": p.get("size_guide_table") or [],
+            "bulk_pricing_enabled": bool(p.get("bulk_pricing_enabled")),
+            "bulk_pricing_overrides": p.get("bulk_pricing_overrides") or [],
+            "allowed_placements": p.get("allowed_placements") or list(ALLOWED_PLACEMENT_OPTIONS),
+            "workforce_eligible": bool(p.get("workforce_eligible")),
+            "also_bought": p.get("also_bought") or [],
+            "match_with": p.get("match_with") or [],
+            "image_gallery": p.get("image_gallery") or [],
+            "specials_eligible": bool(p.get("specials_eligible")),
+            "gender_fit": p.get("gender_fit") or "unisex",
+            "industry_tags": p.get("industry_tags") or [],
+        })
+    return out
+
+
+@api_router.get("/products/{product_id}/allowed-placements")
+async def get_allowed_placements(product_id: str):
+    """Public endpoint — used by PDP and Designer to hide disallowed placements."""
+    p = PRODUCTS.get(product_id)
+    if not p:
+        raise HTTPException(404, "Product not found")
+    return {"allowed_placements": p.get("allowed_placements") or list(ALLOWED_PLACEMENT_OPTIONS)}
+
+
+@api_router.patch("/admin/products/{product_id}/meta", dependencies=[Depends(require_admin)])
+async def update_product_meta(product_id: str, payload: ProductMeta):
+    if product_id not in PRODUCTS:
+        raise HTTPException(404, "Product not found")
+    if payload.bulk_pricing_overrides:
+        for t in payload.bulk_pricing_overrides:
+            if "min_qty" not in t or "pct" not in t:
+                raise HTTPException(400, "each override needs min_qty + pct")
+            try:
+                q = int(t["min_qty"])
+                p = float(t["pct"])
+            except (TypeError, ValueError):
+                raise HTTPException(400, "min_qty must be int, pct must be number")
+            if q < 1 or not (0 <= p <= 90):
+                raise HTTPException(400, "override min_qty >=1; pct 0-90")
+    if payload.allowed_placements is not None:
+        for pl in payload.allowed_placements:
+            if pl not in ALLOWED_PLACEMENT_OPTIONS:
+                raise HTTPException(400, f"unknown placement '{pl}'. Allowed: {ALLOWED_PLACEMENT_OPTIONS}")
+    if payload.also_bought is not None:
+        if len(payload.also_bought) > 6:
+            raise HTTPException(400, "also_bought capped at 6 products")
+        for pid in payload.also_bought:
+            if pid == product_id:
+                raise HTTPException(400, "Cannot cross-sell a product to itself")
+            if pid not in PRODUCTS:
+                raise HTTPException(400, f"Unknown also_bought product_id '{pid}'")
+    if payload.match_with is not None:
+        if len(payload.match_with) > 4:
+            raise HTTPException(400, "match_with capped at 4 products")
+        for pid in payload.match_with:
+            if pid == product_id:
+                raise HTTPException(400, "Cannot match a product with itself")
+            if pid not in PRODUCTS:
+                raise HTTPException(400, f"Unknown match_with product_id '{pid}'")
+    if payload.image_gallery is not None:
+        if len(payload.image_gallery) > 8:
+            raise HTTPException(400, "image_gallery capped at 8 images")
+        for u in payload.image_gallery:
+            if not isinstance(u, str) or not (u.startswith("http://") or u.startswith("https://") or u.startswith("data:image/")):
+                raise HTTPException(400, "image_gallery entries must be http(s) or data: URLs")
+    if payload.gender_fit is not None and payload.gender_fit not in GENDER_FIT_OPTIONS:
+        raise HTTPException(400, f"gender_fit must be one of {GENDER_FIT_OPTIONS}")
+    if payload.industry_tags is not None:
+        for t in payload.industry_tags:
+            if t not in INDUSTRY_SLUGS:
+                raise HTTPException(400, f"Unknown industry '{t}'. Allowed: {INDUSTRY_SLUGS}")
+    doc = {
+        "product_id": product_id,
+        "brand": payload.brand,
+        "sku": payload.sku,
+        "description_full": payload.description_full,
+        "size_guide_image": payload.size_guide_image,
+        "size_guide_table": payload.size_guide_table,
+        "bulk_pricing_enabled": bool(payload.bulk_pricing_enabled),
+        "bulk_pricing_overrides": payload.bulk_pricing_overrides,
+        "allowed_placements": payload.allowed_placements,
+        "workforce_eligible": payload.workforce_eligible if payload.workforce_eligible is not None else bool(PRODUCTS[product_id].get("workforce_eligible")),
+        "also_bought": payload.also_bought,
+        "match_with": payload.match_with,
+        "image_gallery": payload.image_gallery,
+        "specials_eligible": payload.specials_eligible if payload.specials_eligible is not None else bool(PRODUCTS[product_id].get("specials_eligible")),
+        "gender_fit": payload.gender_fit,
+        "industry_tags": payload.industry_tags,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.product_meta.update_one({"product_id": product_id}, {"$set": doc}, upsert=True)
+    for k in ("brand", "sku", "description_full", "size_guide_image", "size_guide_table",
+              "bulk_pricing_enabled", "bulk_pricing_overrides", "allowed_placements",
+              "workforce_eligible", "also_bought", "match_with", "image_gallery", "specials_eligible",
+              "gender_fit", "industry_tags"):
+        v = doc.get(k)
+        if v is not None or k in ("bulk_pricing_enabled", "workforce_eligible", "specials_eligible"):
+            PRODUCTS[product_id][k] = v
+    return {"ok": True}
+
+
+@api_router.get("/bulk-tiers/leavers")
+async def get_leavers_tiers():
+    return {
+        "tiers": [{"min_qty": t, "unit_price": p} for t, p in LEAVERS_BULK_TIERS_DEFAULT],
+        "bag_price": LEAVERS_BAG_PRICE,
+    }
+
+
+# Full-front print upgrade for Leavers — replaces the standard breast pocket print
+LEAVERS_FULL_FRONT_UPCHARGE = 2.50
+# Products that can NOT accept a full-front print (varsity jackets stay chest-panel only)
+LEAVERS_NO_FULL_FRONT_IDS = {"leavers-varsity", "varsity-jacket"}
+
+
+@api_router.get("/leavers/config")
+async def get_leavers_config():
+    """Public config for the Leavers order flow — pricing & rules used by the UI."""
+    return {
+        "full_front_upcharge": LEAVERS_FULL_FRONT_UPCHARGE,
+        "bag_price": LEAVERS_BAG_PRICE,
+        "bulk_tiers": [{"min_qty": t, "unit_price": p} for t, p in LEAVERS_BULK_TIERS_DEFAULT],
+        "no_full_front_product_ids": sorted(LEAVERS_NO_FULL_FRONT_IDS),
+        "proof_days": 2,
+        "names_deadline_days": 7,
+        "design_libraries": {
+            "front_breast": "leavers-front-designs",
+            "back": "leavers-back-designs",
+            "full_front": "leavers-full-front-designs",
+        },
+    }
+
+
+@api_router.get("/leavers/products")
+async def list_leavers_products():
+    out = []
+    for p in PRODUCTS.values():
+        if p.get("category") == "leavers":
+            item = {k: p.get(k) for k in ("id", "name", "price", "image", "description", "sizes")}
+            item["allows_full_front"] = p["id"] not in LEAVERS_NO_FULL_FRONT_IDS
+            out.append(item)
+    return out
+
+
+# ---------- Leavers' design templates (admin-editable) ----------
+DEFAULT_LEAVERS_TEMPLATES = [
+    {"id": "year-nicknames", "title": "Year + nicknames", "description": "Big year on the front, nicknames list on the back. The classic.",
+     "image": "https://images.pexels.com/photos/8839894/pexels-photo-8839894.jpeg", "active": True, "sort_order": 1},
+    {"id": "class-list", "title": "Class list", "description": "Every leaver's name printed on the back. One hoodie, the whole year.",
+     "image": "https://images.pexels.com/photos/9558716/pexels-photo-9558716.jpeg", "active": True, "sort_order": 2},
+    {"id": "varsity", "title": "Varsity letter", "description": "Letter on chest, year on the back, your name on the left sleeve.",
+     "image": "https://images.pexels.com/photos/16429777/pexels-photo-16429777.jpeg", "active": True, "sort_order": 3},
+]
+
+
+class LeaversTemplate(BaseModel):
+    title: str
+    description: Optional[str] = ""
+    image: str
+    active: bool = True
+    sort_order: int = 100
+
+
+@api_router.get("/leavers/templates")
+async def list_leavers_templates():
+    out = []
+    async for d in db.leavers_templates.find({}).sort([("sort_order", 1), ("title", 1)]):
+        if d.get("active", True):
+            out.append({k: d.get(k) for k in ("id", "title", "description", "image", "sort_order")})
+    return out
+
+
+@api_router.get("/admin/leavers/templates", dependencies=[Depends(require_admin)])
+async def admin_list_leavers_templates():
+    out = []
+    async for d in db.leavers_templates.find({}).sort([("sort_order", 1), ("title", 1)]):
+        out.append({k: d.get(k) for k in ("id", "title", "description", "image", "active", "sort_order")})
+    return out
+
+
+@api_router.post("/admin/leavers/templates", dependencies=[Depends(require_admin)])
+async def admin_create_leavers_template(payload: LeaversTemplate):
+    if not (payload.image.startswith("http://") or payload.image.startswith("https://") or payload.image.startswith("data:image/")):
+        raise HTTPException(400, "Image must be http(s) or data: URL")
+    doc = payload.model_dump()
+    doc["id"] = str(uuid.uuid4())
+    doc["created_at"] = datetime.now(timezone.utc).isoformat()
+    await db.leavers_templates.insert_one(doc)
+    return {k: doc[k] for k in ("id", "title", "description", "image", "active", "sort_order")}
+
+
+@api_router.put("/admin/leavers/templates/{template_id}", dependencies=[Depends(require_admin)])
+async def admin_update_leavers_template(template_id: str, payload: LeaversTemplate):
+    if not (payload.image.startswith("http://") or payload.image.startswith("https://") or payload.image.startswith("data:image/")):
+        raise HTTPException(400, "Image must be http(s) or data: URL")
+    res = await db.leavers_templates.update_one(
+        {"id": template_id},
+        {"$set": {**payload.model_dump(), "updated_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Template not found")
+    return {"ok": True}
+
+
+@api_router.delete("/admin/leavers/templates/{template_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_leavers_template(template_id: str):
+    res = await db.leavers_templates.delete_one({"id": template_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Template not found")
+    return {"ok": True}
+
+
+# ---------- Leavers' direct checkout (no group-order flow) ----------
+class LeaversSizeQty(BaseModel):
+    size: str
+    qty: int
+
+
+class LeaversCheckoutRequest(BaseModel):
+    school: str
+    year_group: str
+    contact_name: str
+    contact_email: EmailStr
+    contact_phone: Optional[str] = ""
+    product_id: str
+    template_id: Optional[str] = None
+    template_title: Optional[str] = None
+    # Custom uploads (optional — user can also pick from the design library)
+    custom_design_data_url: Optional[str] = None            # legacy: front design (breast pocket)
+    custom_back_design_data_url: Optional[str] = None       # back print artwork
+    # Design library picks (portfolio ids from PORTFOLIO_CATEGORIES leavers-front/back/full-front-designs)
+    front_design_id: Optional[str] = None
+    back_design_id: Optional[str] = None
+    # Print position — "breast" (default, included) OR "full_front" (+£2.50 upcharge, not allowed on varsity)
+    print_position: str = "breast"
+    # Names — either the customer uploads a file OR they tick to be contacted after purchase
+    names_file_data_url: Optional[str] = None
+    names_collection_mode: str = "upload"                   # "upload" | "we-will-contact"
+    sizes: List[LeaversSizeQty]
+    add_drawstring_bag: bool = False
+    origin_url: str
+
+
+@api_router.post("/leavers/checkout", response_model=CheckoutResponse)
+async def leavers_checkout(payload: LeaversCheckoutRequest, http_request: Request):
+    if payload.product_id not in PRODUCTS:
+        raise HTTPException(400, f"Unknown product '{payload.product_id}'")
+    p = PRODUCTS[payload.product_id]
+    if p.get("category") != "leavers":
+        raise HTTPException(400, "Selected product is not a leavers' garment")
+    sizes_set = set(p.get("sizes") or [])
+    total_qty = 0
+    line_summary: List[str] = []
+    for s in payload.sizes:
+        if s.qty < 1:
+            continue
+        if sizes_set and s.size not in sizes_set:
+            raise HTTPException(400, f"Size '{s.size}' unavailable for {p['name']}")
+        total_qty += int(s.qty)
+        line_summary.append(f"{s.size}×{s.qty}")
+    if total_qty < 1:
+        raise HTTPException(400, "Add at least one item")
+
+    # Validate print position
+    if payload.print_position not in ("breast", "full_front"):
+        raise HTTPException(400, "print_position must be 'breast' or 'full_front'")
+    if payload.print_position == "full_front" and payload.product_id in LEAVERS_NO_FULL_FRONT_IDS:
+        raise HTTPException(400, f"{p['name']} does not support a full-front print — please choose the breast option.")
+    full_front_upcharge = LEAVERS_FULL_FRONT_UPCHARGE if payload.print_position == "full_front" else 0.0
+
+    base = float(p["price"])
+    unit = tier_unit_price(LEAVERS_BULK_TIERS_DEFAULT, base, total_qty) + full_front_upcharge
+    bag_each = LEAVERS_BAG_PRICE if payload.add_drawstring_bag else 0.0
+    per_unit = unit + bag_each
+    total_amount = round(per_unit * total_qty, 2)
+    if total_amount < 0.5:
+        raise HTTPException(400, "Total below Stripe minimum (£0.50)")
+
+    # Require SOME kind of design — either a template, a picked design from the library, or a custom upload
+    has_design = any([
+        payload.template_id,
+        payload.front_design_id,
+        payload.back_design_id,
+        payload.custom_design_data_url,
+        payload.custom_back_design_data_url,
+    ])
+    if not has_design:
+        raise HTTPException(400, "Pick a design (front or back) or upload your own artwork")
+
+    # Validate data-URL uploads
+    for label, du in (
+        ("front", payload.custom_design_data_url),
+        ("back", payload.custom_back_design_data_url),
+        ("names", payload.names_file_data_url),
+    ):
+        if not du:
+            continue
+        if not (du.startswith("data:image/") or du.startswith("data:application/")):
+            raise HTTPException(400, f"{label} upload must be an image or file data URL")
+        if len(du) > 8 * 1024 * 1024:
+            raise HTTPException(400, f"{label} upload too large (max ~6 MB)")
+
+    if payload.names_collection_mode not in ("upload", "we-will-contact"):
+        raise HTTPException(400, "names_collection_mode must be 'upload' or 'we-will-contact'")
+
+    origin = payload.origin_url.rstrip("/")
+    success_url = f"{origin}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/leavers-hoodies"
+
+    metadata = {
+        "flow": "leavers",
+        "school": payload.school[:80],
+        "year_group": payload.year_group[:60],
+        "contact_name": payload.contact_name[:80],
+        "contact_email": payload.contact_email[:80],
+        "product_id": payload.product_id,
+        "template_id": payload.template_id or "custom",
+        "template_title": (payload.template_title or "")[:80],
+        "print_position": payload.print_position,
+        "front_design_id": (payload.front_design_id or "")[:60],
+        "back_design_id": (payload.back_design_id or "")[:60],
+        "names_mode": payload.names_collection_mode,
+        "total_qty": str(total_qty),
+        "unit_price": f"{unit:.2f}",
+        "bag_each": f"{bag_each:.2f}",
+        "lines": ",".join(line_summary)[:450],
+    }
+
+    session = await create_checkout_session(
+        api_key=STRIPE_API_KEY,
+        amount=total_amount, currency="gbp",
+        success_url=success_url, cancel_url=cancel_url,
+        metadata=metadata,
+        product_name="Leavers hoodie order",
+    )
+
+    artwork_id = None
+    if any([payload.custom_design_data_url, payload.custom_back_design_data_url, payload.names_file_data_url]):
+        artwork_id = str(uuid.uuid4())
+        await db.leavers_artwork.insert_one({
+            "id": artwork_id,
+            "session_id": session.id,
+            "custom_design": payload.custom_design_data_url,               # front
+            "custom_back_design": payload.custom_back_design_data_url,     # back
+            "names_file": payload.names_file_data_url,                     # names list
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session.id,
+        "flow": "leavers",
+        "school": payload.school,
+        "year_group": payload.year_group,
+        "contact_name": payload.contact_name,
+        "contact_email": payload.contact_email,
+        "contact_phone": payload.contact_phone,
+        "product_id": payload.product_id,
+        "template_id": payload.template_id,
+        "template_title": payload.template_title,
+        "front_design_id": payload.front_design_id,
+        "back_design_id": payload.back_design_id,
+        "print_position": payload.print_position,
+        "names_collection_mode": payload.names_collection_mode,
+        "custom_design_artwork_id": artwork_id,
+        "sizes": [s.model_dump() for s in payload.sizes if s.qty > 0],
+        "add_drawstring_bag": bool(payload.add_drawstring_bag),
+        "total_quantity": total_qty,
+        "unit_price": unit,
+        "full_front_upcharge": full_front_upcharge,
+        "amount": total_amount,
+        "currency": "gbp",
+        "metadata": metadata,
+        "payment_status": "pending",
+        "status": "initiated",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return CheckoutResponse(url=session.url, session_id=session.id)
+
+
+class LeaversBespokeRequest(BaseModel):
+    school: str
+    year_group: str
+    contact_name: str
+    contact_email: EmailStr
+    contact_phone: Optional[str] = ""
+    estimated_qty: int
+    notes: Optional[str] = ""
+
+
+@api_router.post("/leavers/bespoke")
+async def leavers_bespoke(payload: LeaversBespokeRequest):
+    if payload.estimated_qty < 1:
+        raise HTTPException(400, "Estimated quantity must be at least 1")
+    doc = {
+        "id": str(uuid.uuid4()),
+        "kind": "leavers_bespoke",
+        "name": payload.contact_name,
+        "email": payload.contact_email,
+        "phone": payload.contact_phone or "",
+        "company": payload.school,
+        "year_group": payload.year_group,
+        "quantity": int(payload.estimated_qty),
+        "message": payload.notes or "",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.quote_requests.insert_one(doc)
+
+    # Fire-and-forget email notifications via Resend. Failures don't block the response.
+    shop_to = await _shop_notification_recipient()
+    body_shop = _email_wrap(
+        "New bespoke leavers quote",
+        f"""
+        <p><strong>{payload.contact_name}</strong> from {payload.school} ({payload.year_group}) has asked for a bespoke leavers' hoodies quote.</p>
+        <table cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-size:14px;margin-top:8px">
+          <tr><td style="color:#4b5563"><strong>Estimated qty</strong></td><td>{payload.estimated_qty}</td></tr>
+          <tr><td style="color:#4b5563"><strong>Email</strong></td><td>{payload.contact_email}</td></tr>
+          <tr><td style="color:#4b5563"><strong>Phone</strong></td><td>{payload.contact_phone or '—'}</td></tr>
+          <tr><td style="color:#4b5563" valign="top"><strong>Notes</strong></td><td>{(payload.notes or '—').replace(chr(10),'<br>')}</td></tr>
+        </table>
+        <p style="margin-top:16px;color:#4b5563;font-size:12px">Reply to this email to reach the customer directly.</p>
+        """,
+    )
+    if shop_to:
+        await _send_email(to=[shop_to], subject=f"[Leavers] {payload.school} — {payload.estimated_qty} hoodies",
+                          html=body_shop, reply_to=payload.contact_email)
+    # Confirmation to customer
+    body_cust = _email_wrap(
+        "Got it — we're on the case!",
+        f"""
+        <p>Hi {payload.contact_name.split(' ')[0]},</p>
+        <p>Thanks for your bespoke leavers' hoodies enquiry for <strong>{payload.school}</strong> ({payload.year_group}). A real human will be in touch within 1 working day with fabric options, a design proof and pricing.</p>
+        <p style="color:#4b5563">In the meantime, feel free to reply to this email with any extra details or mock-up ideas.</p>
+        <p style="margin-top:16px">— The Your Own Print team</p>
+        """,
+    )
+    reply_to = shop_to or None
+    await _send_email(to=[payload.contact_email], subject="Your bespoke leavers' hoodies enquiry",
+                      html=body_cust, reply_to=reply_to)
+    return {"ok": True, "id": doc["id"]}
+
+
+# ---------- Kit Your Workforce ----------
+SETTINGS_KEY_WORKFORCE_TIERS = "workforce_tiers_pct"
+SETTINGS_KEY_WORKFORCE_QUOTE_THRESHOLD = "workforce_quote_threshold"
+WORKFORCE_QUOTE_THRESHOLD_DEFAULT = 100  # > 100 garments → quote-only
+WORKFORCE_BACK_PRINT_PRICE = 3.50  # per-garment add-on
+
+
+async def _get_workforce_tiers() -> List[Tuple[int, float]]:
+    """Return [(min_qty, pct)] sorted desc; falls back to default % bulk tiers."""
+    doc = await db.settings.find_one({"key": SETTINGS_KEY_WORKFORCE_TIERS})
+    if doc and "tiers" in doc and doc["tiers"]:
+        tiers = doc["tiers"]
+    else:
+        tiers = DEFAULT_BULK_TIERS_PCT
+    return sorted([(int(t[0]), float(t[1])) for t in tiers], key=lambda x: -x[0])
+
+
+async def _get_workforce_threshold() -> int:
+    doc = await db.settings.find_one({"key": SETTINGS_KEY_WORKFORCE_QUOTE_THRESHOLD})
+    try:
+        return int(doc["value"]) if doc and "value" in doc else WORKFORCE_QUOTE_THRESHOLD_DEFAULT
+    except (TypeError, ValueError):
+        return WORKFORCE_QUOTE_THRESHOLD_DEFAULT
+
+
+@api_router.get("/workforce/products")
+async def list_workforce_products():
+    """Garments admin has flagged 'workforce_eligible' in /admin/product-settings."""
+    out = []
+    for p in PRODUCTS.values():
+        if p.get("workforce_eligible"):
+            out.append({
+                "id": p["id"], "name": p["name"], "price": float(p["price"]),
+                "image": p["image"],
+                "description": p.get("description") or "",
+                "sizes": p.get("sizes", []),
+                "size_upcharges": p.get("size_upcharges", {}),
+                "category": p["category"],
+                "brand": p.get("brand") or "",
+                "allowed_placements": p.get("allowed_placements") or list(ALLOWED_PLACEMENT_OPTIONS),
+            })
+    out.sort(key=lambda x: x["price"])
+    return out
+
+
+@api_router.get("/specials/products")
+async def list_specials_products():
+    """Your Own Print Specials — single breast-pocket logo print, no MOQ, starter-business pricing."""
+    out = []
+    for p in PRODUCTS.values():
+        if p.get("specials_eligible"):
+            out.append({
+                "id": p["id"], "name": p["name"], "price": float(p["price"]),
+                "image": p["image"],
+                "description": p.get("description") or "",
+                "sizes": p.get("sizes", []),
+                "category": p["category"],
+                "brand": p.get("brand") or "",
+                "gender_fit": p.get("gender_fit") or "unisex",
+            })
+    out.sort(key=lambda x: x["price"])
+    return out
+
+
+# ---------- Industries ----------
+@api_router.get("/industries")
+async def list_industries():
+    out = []
+    for ind in INDUSTRIES_CATALOGUE:
+        if ind.get("alias_of"):
+            continue
+        # Match by canonical slug OR any legacy alias slug pointing to it
+        legacy = {a["slug"] for a in INDUSTRIES_CATALOGUE if a.get("alias_of") == ind["slug"]}
+        count = sum(1 for p in PRODUCTS.values()
+                    if any(s in (p.get("industry_tags") or []) for s in {ind["slug"], *legacy}))
+        out.append({**ind, "product_count": count})
+    return out
+
+
+# ---------- Shop by garment type ----------
+GARMENT_TYPE_CATALOGUE = [
+    {"slug": "t-shirts",    "title": "T-shirts",     "image": "https://images.pexels.com/photos/9558716/pexels-photo-9558716.jpeg"},
+    {"slug": "hoodies",     "title": "Hoodies",      "image": "https://images.pexels.com/photos/8839894/pexels-photo-8839894.jpeg"},
+    {"slug": "polos",       "title": "Polos",        "image": "https://images.pexels.com/photos/8217544/pexels-photo-8217544.jpeg"},
+    {"slug": "sweatshirts", "title": "Sweatshirts",  "image": "https://images.pexels.com/photos/9558716/pexels-photo-9558716.jpeg"},
+    {"slug": "jackets",     "title": "Jackets",      "image": "https://images.pexels.com/photos/16429777/pexels-photo-16429777.jpeg"},
+    {"slug": "hi-vis",      "title": "Hi-Vis",       "image": "https://images.pexels.com/photos/8961331/pexels-photo-8961331.jpeg"},
+    {"slug": "shorts",      "title": "Shorts",       "image": "https://images.pexels.com/photos/2261477/pexels-photo-2261477.jpeg"},
+    {"slug": "bottoms",     "title": "Joggers & Trousers", "image": "https://images.pexels.com/photos/5384423/pexels-photo-5384423.jpeg"},
+    {"slug": "aprons",      "title": "Aprons",       "image": "https://images.pexels.com/photos/4252136/pexels-photo-4252136.jpeg"},
+    {"slug": "accessories", "title": "Accessories",  "image": "https://images.pexels.com/photos/3997991/pexels-photo-3997991.jpeg"},
+]
+
+
+def _garment_type_of(product: Dict) -> Optional[str]:
+    # Prefer the product's explicit `category` when it matches a catalogue slug.
+    # This lets bulk-imported products land in the collection admin chose at import
+    # time without depending on fragile name-substring heuristics.
+    cat = (product.get("category") or "").lower()
+    _catalogue_slugs = {t["slug"] for t in GARMENT_TYPE_CATALOGUE}
+    if cat in _catalogue_slugs:
+        return cat
+    pid = product["id"].lower()
+    name = (product.get("name") or "").lower()
+    if "apron" in pid or "apron" in name:
+        return "aprons"
+    if "legging" in pid or "trouser" in pid or "jogger" in pid or "legging" in name or "trouser" in name or "jogger" in name:
+        return "bottoms"
+    if "short" in pid or "short" in name:
+        return "shorts"
+    if "jacket" in pid or "jacket" in name or "varsity" in pid or "softshell" in pid:
+        return "jackets"
+    if "vest" in pid or "vest" in name or "hi-vis" in pid or "hi vis" in name:
+        return "hi-vis"
+    if "polo" in pid or "polo" in name:
+        return "polos"
+    if "hoodie" in pid or "hoodie" in name or "pullover" in pid:
+        return "hoodies"
+    if "sweatshirt" in pid or "crewneck" in pid:
+        return "sweatshirts"
+    if "tee" in pid or "tshirt" in pid or "t-shirt" in name or "shirt" in pid:
+        return "t-shirts"
+    if "bag" in pid or "beanie" in pid or "drawstring" in pid:
+        return "accessories"
+    if cat == "leavers":
+        return "hoodies"
+    return None
+
+
+@api_router.get("/shop/types")
+async def list_shop_garment_types():
+    out = []
+    for t in GARMENT_TYPE_CATALOGUE:
+        count = sum(1 for p in PRODUCTS.values() if _garment_type_of(p) == t["slug"])
+        out.append({**t, "product_count": count})
+    return out
+
+
+def _collect_variant_field(prod: Dict, field: str) -> List:
+    """Extract a variant field (colors, sizes). Products merge variants flat via _VARIANT_MAP."""
+    v = prod.get(field)
+    if v is None:
+        nested = prod.get("variants") or {}
+        v = nested.get(field) or []
+    return v if isinstance(v, list) else []
+
+
+def _facets_from_products(products: List[Dict]) -> Dict:
+    """Compute auto-derived facets. Only facets with variance (>1 distinct value) are returned."""
+    from collections import Counter
+    gender_c: Counter = Counter()
+    colour_c: Counter = Counter()
+    size_c: Counter = Counter()
+    industry_c: Counter = Counter()
+    prices: List[float] = []
+    for p in products:
+        gender_c[p.get("gender_fit") or "unisex"] += 1
+        for c in _collect_variant_field(p, "colors"):
+            if isinstance(c, dict):
+                name = c.get("name")
+                if name:
+                    colour_c[name] += 1
+            elif isinstance(c, str):
+                colour_c[c] += 1
+        for s in _collect_variant_field(p, "sizes"):
+            if isinstance(s, str):
+                size_c[s] += 1
+        for t in p.get("industry_tags") or []:
+            industry_c[t] += 1
+        try:
+            prices.append(float(p.get("price") or 0))
+        except (TypeError, ValueError):
+            pass
+    facets: Dict = {}
+    if len(gender_c) > 1:
+        facets["gender_fit"] = [{"value": k, "count": v} for k, v in gender_c.most_common()]
+    if len(colour_c) > 1:
+        # Order colours by frequency and cap to 24 to keep the sidebar tidy.
+        facets["colour"] = [{"value": k, "count": v} for k, v in colour_c.most_common(24)]
+    if len(size_c) > 1:
+        # Preserve garment-industry natural size order when possible.
+        SIZE_ORDER = ["XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL", "5XL",
+                      "3-4 yrs", "5-6 yrs", "7-8 yrs", "9-11 yrs", "12-13 yrs",
+                      "kids-S", "kids-M", "kids-L", "0-3M", "3-6M", "6-12M"]
+        keys = list(size_c.keys())
+        keys.sort(key=lambda k: (SIZE_ORDER.index(k) if k in SIZE_ORDER else 999, k))
+        facets["size"] = [{"value": k, "count": size_c[k]} for k in keys]
+    if len(industry_c) > 1:
+        facets["industry"] = [{"value": k, "count": v} for k, v in industry_c.most_common(20)]
+    if prices:
+        facets["price_range"] = {"min": round(min(prices), 2), "max": round(max(prices), 2)}
+    return facets
+
+
+async def _collection_seo_copy(slug: str) -> Dict:
+    """Return admin-editable SEO copy for a shop-type slug. Keys: intro, body, faq."""
+    doc = await db.settings.find_one({"key": f"collection_seo:{slug}"})
+    if not doc:
+        return {"intro": "", "body": "", "faq": []}
+    return {
+        "intro": doc.get("intro") or "",
+        "body": doc.get("body") or "",
+        "faq": doc.get("faq") or [],
+    }
+
+
+@api_router.get("/shop/type/{slug}")
+async def shop_by_garment_type(
+    slug: str,
+    gender_fit: Optional[str] = None,
+    colour: Optional[str] = None,     # comma-separated list of colour names
+    size: Optional[str] = None,        # comma-separated list of sizes
+    industry: Optional[str] = None,    # comma-separated list of industry tags
+    price_min: Optional[float] = None,
+    price_max: Optional[float] = None,
+):
+    meta = next((t for t in GARMENT_TYPE_CATALOGUE if t["slug"] == slug), None)
+    if not meta:
+        raise HTTPException(404, "Garment type not found")
+    # All products in this collection (used to derive facets — before applying filters).
+    all_prods = [p for p in PRODUCTS.values() if _garment_type_of(p) == slug]
+    facets = _facets_from_products(all_prods)
+
+    colour_set = {c.strip() for c in (colour or "").split(",") if c.strip()}
+    size_set = {s.strip() for s in (size or "").split(",") if s.strip()}
+    industry_set = {i.strip() for i in (industry or "").split(",") if i.strip()}
+
+    def matches(p: Dict) -> bool:
+        if gender_fit and (p.get("gender_fit") or "unisex") != gender_fit:
+            return False
+        if colour_set:
+            names = {(c.get("name") if isinstance(c, dict) else c) for c in _collect_variant_field(p, "colors")}
+            if not (colour_set & names):
+                return False
+        if size_set:
+            szs = set(_collect_variant_field(p, "sizes"))
+            if not (size_set & szs):
+                return False
+        if industry_set:
+            tags = set(p.get("industry_tags") or [])
+            if not (industry_set & tags):
+                return False
+        try:
+            price = float(p.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0.0
+        if price_min is not None and price < price_min:
+            return False
+        if price_max is not None and price > price_max:
+            return False
+        return True
+
+    items: List[Dict] = []
+    for p in all_prods:
+        if not matches(p):
+            continue
+        items.append({
+            "id": p["id"], "name": p["name"], "price": float(p["price"]),
+            "image": p["image"], "category": p["category"],
+            "description": p.get("description") or "",
+            "gender_fit": p.get("gender_fit") or "unisex",
+            "industry_tags": p.get("industry_tags") or [],
+        })
+    items.sort(key=lambda x: x["price"])
+    seo = await _collection_seo_copy(slug)
+    return {**meta, "products": items, "facets": facets, "seo": seo, "total": len(all_prods)}
+
+
+@api_router.patch("/admin/collection-seo/{slug}", dependencies=[Depends(require_admin)])
+async def admin_update_collection_seo(slug: str, payload: Dict):
+    """Save admin-editable SEO block for a shop-type collection.
+    Body: {intro?: str, body?: str, faq?: [{q,a}]}"""
+    meta = next((t for t in GARMENT_TYPE_CATALOGUE if t["slug"] == slug), None)
+    if not meta:
+        raise HTTPException(404, "Unknown collection slug")
+    doc = {
+        "key": f"collection_seo:{slug}",
+        "slug": slug,
+        "intro": (payload.get("intro") or "")[:2000],
+        "body": (payload.get("body") or "")[:8000],
+        "faq": [
+            {"q": (f.get("q") or "")[:200], "a": (f.get("a") or "")[:1000]}
+            for f in (payload.get("faq") or [])[:20]
+            if isinstance(f, dict) and (f.get("q") or "").strip()
+        ],
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.settings.update_one({"key": doc["key"]}, {"$set": doc}, upsert=True)
+    return {"ok": True, **doc}
+
+
+@api_router.get("/admin/collection-seo/{slug}", dependencies=[Depends(require_admin)])
+async def admin_get_collection_seo(slug: str):
+    return await _collection_seo_copy(slug)
+
+
+@api_router.get("/industries/{slug}")
+async def get_industry(slug: str, gender_fit: Optional[str] = None):
+    ind = next((i for i in INDUSTRIES_CATALOGUE if i["slug"] == slug), None)
+    if not ind:
+        raise HTTPException(404, "Industry not found")
+    # Resolve canonical (if this is a legacy alias)
+    canonical_slug = ind.get("alias_of") or ind["slug"]
+    canonical = next((i for i in INDUSTRIES_CATALOGUE if i["slug"] == canonical_slug), ind)
+    # Tags to match: canonical + any aliases pointing to it
+    match_slugs = {canonical_slug} | {a["slug"] for a in INDUSTRIES_CATALOGUE if a.get("alias_of") == canonical_slug}
+    products = []
+    for p in PRODUCTS.values():
+        tags = set(p.get("industry_tags") or [])
+        if tags & match_slugs:
+            if gender_fit and (p.get("gender_fit") or "unisex") != gender_fit:
+                continue
+            products.append({
+                "id": p["id"], "name": p["name"], "price": float(p["price"]),
+                "image": p["image"], "category": p["category"],
+                "description": p.get("description") or "",
+                "gender_fit": p.get("gender_fit") or "unisex",
+            })
+    products.sort(key=lambda x: x["price"])
+    # Strip the alias_of marker from the response
+    out = {k: v for k, v in canonical.items() if k != "alias_of"}
+    return {**out, "products": products}
+
+
+# ---------- Sports & Fitness Teams (SEO landings) ----------
+@api_router.get("/sports-teams")
+async def list_sports_teams():
+    out = []
+    for s in SPORTS_TEAMS_CATALOGUE:
+        out.append({"slug": s["slug"], "title": s["title"], "subtitle": s["subtitle"],
+                    "hero_image": s["hero_image"], "intro": s["intro"]})
+    return out
+
+
+@api_router.get("/sports-teams/{slug}")
+async def get_sports_team(slug: str):
+    s = next((i for i in SPORTS_TEAMS_CATALOGUE if i["slug"] == slug), None)
+    if not s:
+        raise HTTPException(404, "Sports landing not found")
+    products = []
+    for pid in s.get("product_ids", []):
+        p = PRODUCTS.get(pid)
+        if p:
+            products.append({
+                "id": p["id"], "name": p["name"], "price": float(p["price"]),
+                "image": p["image"], "category": p["category"],
+                "description": p.get("description") or "",
+            })
+    return {**s, "products": products}
+
+
+@api_router.get("/workforce/tiers")
+async def get_workforce_tiers():
+    tiers = await _get_workforce_tiers()
+    return {
+        "tiers": [{"min_qty": q, "pct": p} for q, p in sorted(tiers, key=lambda x: x[0])],
+        "quote_threshold": await _get_workforce_threshold(),
+        "back_print_price": WORKFORCE_BACK_PRINT_PRICE,
+    }
+
+
+@api_router.patch("/admin/workforce-tiers", dependencies=[Depends(require_admin)])
+async def update_workforce_tiers(payload: Dict):
+    tiers = payload.get("tiers")
+    if not isinstance(tiers, list) or not tiers:
+        raise HTTPException(400, "tiers must be a non-empty list")
+    cleaned = []
+    for t in tiers:
+        try:
+            q = int(t["min_qty"])
+            p = float(t["pct"])
+        except (KeyError, TypeError, ValueError):
+            raise HTTPException(400, "each tier needs min_qty (int) + pct (number)")
+        if q < 1 or not (0 <= p <= 90):
+            raise HTTPException(400, "min_qty >=1; pct 0-90")
+        cleaned.append([q, p])
+    await db.settings.update_one(
+        {"key": SETTINGS_KEY_WORKFORCE_TIERS},
+        {"$set": {"key": SETTINGS_KEY_WORKFORCE_TIERS, "tiers": cleaned,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    threshold = payload.get("quote_threshold")
+    if threshold is not None:
+        try:
+            tv = int(threshold)
+            if tv < 1:
+                raise ValueError()
+        except (TypeError, ValueError):
+            raise HTTPException(400, "quote_threshold must be a positive integer")
+        await db.settings.update_one(
+            {"key": SETTINGS_KEY_WORKFORCE_QUOTE_THRESHOLD},
+            {"$set": {"key": SETTINGS_KEY_WORKFORCE_QUOTE_THRESHOLD, "value": tv,
+                      "updated_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
         )
-    except stripe.error.StripeError as e:
+    return {"ok": True}
+
+
+class WorkforceLine(BaseModel):
+    product_id: str
+    size: str
+    qty: int
+    back_print: bool = False  # +£3.50/garment
+
+
+class WorkforceCheckoutRequest(BaseModel):
+    lines: List[WorkforceLine]
+    origin_url: str
+    company: Optional[str] = ""
+    contact_name: Optional[str] = ""
+    contact_email: Optional[EmailStr] = None
+    contact_phone: Optional[str] = ""
+    breast_logo_data_url: Optional[str] = None
+    back_print_data_url: Optional[str] = None
+
+
+def _resolve_workforce_tier(total_qty: int, tiers: List[Tuple[int, float]]) -> float:
+    """Return the % discount that applies for this total qty (0 if below smallest tier)."""
+    for threshold, pct in tiers:  # already desc
+        if total_qty >= threshold:
+            return pct
+    return 0.0
+
+
+@api_router.post("/workforce/quote", response_model=Dict)
+async def workforce_quote(payload: WorkforceCheckoutRequest):
+    """Used when total qty exceeds quote_threshold. Logs a QuoteRequest entry."""
+    threshold = await _get_workforce_threshold()
+    total_qty = sum(int(ln.qty) for ln in payload.lines if ln.qty > 0)
+    if total_qty <= threshold:
+        raise HTTPException(400, f"Quote-only above {threshold} items. Total submitted: {total_qty}.")
+    if not payload.contact_email or not payload.contact_name:
+        raise HTTPException(400, "Contact name and email are required for a quote")
+    items = []
+    for ln in payload.lines:
+        if ln.product_id not in PRODUCTS or ln.qty < 1:
+            continue
+        items.append({
+            "product_id": ln.product_id,
+            "product_name": PRODUCTS[ln.product_id]["name"],
+            "size": ln.size, "qty": int(ln.qty), "back_print": bool(ln.back_print),
+        })
+    doc = {
+        "id": str(uuid.uuid4()),
+        "kind": "workforce",
+        "name": payload.contact_name, "email": payload.contact_email,
+        "phone": payload.contact_phone or "", "company": payload.company or "",
+        "quantity": total_qty,
+        "message": f"Workforce kit quote — {len(items)} line items, {total_qty} total garments.",
+        "items": items,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.quote_requests.insert_one(doc)
+    return {"ok": True, "id": doc["id"], "total_qty": total_qty}
+
+
+@api_router.post("/workforce/checkout", response_model=CheckoutResponse)
+async def workforce_checkout(payload: WorkforceCheckoutRequest, http_request: Request):
+    threshold = await _get_workforce_threshold()
+    tiers = await _get_workforce_tiers()
+
+    # Validate lines
+    valid_lines: List[Dict] = []
+    total_qty = 0
+    for ln in payload.lines:
+        if ln.product_id not in PRODUCTS:
+            raise HTTPException(400, f"Unknown product '{ln.product_id}'")
+        p = PRODUCTS[ln.product_id]
+        if not p.get("workforce_eligible"):
+            raise HTTPException(400, f"Product '{p['name']}' is not workforce-eligible")
+        if ln.qty < 1:
+            continue
+        allowed_sizes = set(p.get("sizes") or [])
+        if allowed_sizes and ln.size not in allowed_sizes:
+            raise HTTPException(400, f"Size '{ln.size}' unavailable for {p['name']}")
+        # Back-print only allowed if the product permits it
+        ap = set(p.get("allowed_placements") or ALLOWED_PLACEMENT_OPTIONS)
+        if ln.back_print and "back-print" not in ap:
+            raise HTTPException(400, f"Back print not available on {p['name']}")
+        size_upcharge = float((p.get("size_upcharges") or {}).get(ln.size, 0.0))
+        valid_lines.append({
+            "product_id": ln.product_id,
+            "product_name": p["name"],
+            "size": ln.size, "qty": int(ln.qty),
+            "back_print": bool(ln.back_print),
+            "base_price": float(p["price"]),
+            "size_upcharge": size_upcharge,
+        })
+        total_qty += int(ln.qty)
+
+    if total_qty < 1:
+        raise HTTPException(400, "Add at least one garment to the kit")
+    if total_qty > threshold:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Over {threshold} garments — please request a quote (POST /api/workforce/quote)",
+        )
+
+    # Validate artwork
+    if not payload.breast_logo_data_url or not payload.breast_logo_data_url.startswith("data:image/"):
+        raise HTTPException(400, "Please upload your breast-logo artwork before checking out")
+    needs_back_print = any(ln["back_print"] for ln in valid_lines)
+    if needs_back_print:
+        if not payload.back_print_data_url or not payload.back_print_data_url.startswith("data:image/"):
+            raise HTTPException(400, "You've selected back print on some garments — please upload your back-print artwork")
+    # Cap size to ~8 MB total each (Stripe metadata won't carry the image; we'll save to artwork doc)
+    MAX_DATA_URL = 8 * 1024 * 1024
+    if len(payload.breast_logo_data_url) > MAX_DATA_URL:
+        raise HTTPException(400, "Breast logo image too large (max ~6 MB)")
+    if payload.back_print_data_url and len(payload.back_print_data_url) > MAX_DATA_URL:
+        raise HTTPException(400, "Back print image too large (max ~6 MB)")
+
+    discount_pct = _resolve_workforce_tier(total_qty, tiers)
+    factor = 1 - (discount_pct / 100.0)
+
+    # Compute total
+    total_amount = 0.0
+    breakdown_strs: List[str] = []
+    for ln in valid_lines:
+        # tier discount applies only to the garment base (not size upcharges or back-print)
+        unit_garment = snap_to_99(ln["base_price"] * factor) if discount_pct > 0 else ln["base_price"]
+        unit = unit_garment + ln["size_upcharge"] + (WORKFORCE_BACK_PRINT_PRICE if ln["back_print"] else 0.0)
+        line_total = round(unit * ln["qty"], 2)
+        ln["unit_price"] = unit
+        ln["line_total"] = line_total
+        total_amount += line_total
+        breakdown_strs.append(f"{ln['product_id']}·{ln['size']}×{ln['qty']}@£{unit:.2f}")
+    total_amount = round(total_amount, 2)
+
+    if total_amount < 0.5:
+        raise HTTPException(400, "Total below Stripe minimum (£0.50)")
+
+    origin = payload.origin_url.rstrip("/")
+    success_url = f"{origin}/checkout/success?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{origin}/workforce"
+
+    metadata = {
+        "flow": "workforce",
+        "total_qty": str(total_qty),
+        "discount_pct": f"{discount_pct:.1f}",
+        "lines": "|".join(breakdown_strs)[:450],
+        "company": (payload.company or "")[:80],
+        "contact_name": (payload.contact_name or "")[:80],
+        "contact_email": (payload.contact_email or "")[:80],
+    }
+
+    session = await create_checkout_session(
+        api_key=STRIPE_API_KEY,
+        amount=total_amount, currency="gbp",
+        success_url=success_url, cancel_url=cancel_url,
+        metadata=metadata,
+        product_name="Workforce order",
+    )
+
+    artwork_doc_id = str(uuid.uuid4())
+    await db.workforce_artwork.insert_one({
+        "id": artwork_doc_id,
+        "session_id": session.id,
+        "breast_logo": payload.breast_logo_data_url,
+        "back_print": payload.back_print_data_url,
+        "needs_back_print": needs_back_print,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    await db.payment_transactions.insert_one({
+        "id": str(uuid.uuid4()),
+        "session_id": session.id,
+        "flow": "workforce",
+        "lines": valid_lines,
+        "total_quantity": total_qty,
+        "discount_pct": discount_pct,
+        "amount": total_amount,
+        "currency": "gbp",
+        "metadata": metadata,
+        "artwork_id": artwork_doc_id,
+        "payment_status": "pending",
+        "status": "initiated",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return CheckoutResponse(url=session.url, session_id=session.id)
+
+
+# ---------- Also bought with (cross-sells) ----------
+@api_router.get("/products/{product_id}/also-bought")
+async def also_bought(product_id: str, limit: int = 4):
+    p = PRODUCTS.get(product_id)
+    if not p:
+        raise HTTPException(404, "Product not found")
+    picks = list(p.get("also_bought") or [])
+    # Auto-fallback: same category if admin hasn't picked any
+    if not picks:
+        same_cat = [
+            q for q in PRODUCTS.values()
+            if q["id"] != product_id and q["category"] == p["category"]
+        ]
+        # Take up to limit, stable order (by price asc then id)
+        same_cat.sort(key=lambda x: (float(x["price"]), x["id"]))
+        picks = [q["id"] for q in same_cat[:limit]]
+    out = []
+    seen = set()
+    for pid in picks:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        q = PRODUCTS.get(pid)
+        if not q:
+            continue
+        out.append({
+            "id": q["id"], "name": q["name"], "price": float(q["price"]),
+            "image": q["image"], "category": q["category"],
+        })
+        if len(out) >= max(1, min(int(limit or 4), 8)):
+            break
+    return out
+
+
+@api_router.get("/products/{product_id}/match-with")
+async def match_with(product_id: str, limit: int = 4):
+    """Curator-picked complementary products (no auto-fallback — returns empty if admin hasn't picked any)."""
+    p = PRODUCTS.get(product_id)
+    if not p:
+        raise HTTPException(404, "Product not found")
+    picks = list(p.get("match_with") or [])
+    out = []
+    seen = set()
+    for pid in picks:
+        if pid in seen:
+            continue
+        seen.add(pid)
+        q = PRODUCTS.get(pid)
+        if not q:
+            continue
+        out.append({
+            "id": q["id"], "name": q["name"], "price": float(q["price"]),
+            "image": q["image"], "category": q["category"],
+        })
+        if len(out) >= max(1, min(int(limit or 4), 6)):
+            break
+    return out
+
+
+# ---------- Group orders (leavers' hoodies shared link) ----------
+class GroupOrderCreate(BaseModel):
+    school: str
+    year_group: str
+    deadline: str           # ISO date string
+    contact_name: str
+    contact_email: str
+    contact_phone: Optional[str] = None
+    product_id: str
+    design_brief: Optional[str] = None
+    include_bag: bool = False
+
+
+class GroupOrderJoin(BaseModel):
+    name: str
+    nickname: Optional[str] = None
+    size: str
+    qty: int = 1
+    note: Optional[str] = None
+
+
+def _group_order_public(doc: dict) -> dict:
+    """Strip internal fields before returning to public callers."""
+    return {
+        "token": doc["token"],
+        "school": doc["school"],
+        "year_group": doc["year_group"],
+        "deadline": doc["deadline"],
+        "product_id": doc["product_id"],
+        "design_brief": doc.get("design_brief"),
+        "include_bag": bool(doc.get("include_bag")),
+        "status": doc.get("status", "open"),
+        "roster_count": len(doc.get("roster", [])),
+        "created_at": doc.get("created_at"),
+    }
+
+
+@api_router.post("/group-orders")
+async def create_group_order(payload: GroupOrderCreate):
+    if payload.product_id not in PRODUCTS or PRODUCTS[payload.product_id].get("category") != "leavers":
+        raise HTTPException(400, "Unknown leavers product")
+    token = uuid.uuid4().hex[:10]
+    manage_token = uuid.uuid4().hex
+    doc = {
+        "id": str(uuid.uuid4()),
+        "token": token,
+        "manage_token": manage_token,
+        "school": payload.school.strip(),
+        "year_group": payload.year_group.strip(),
+        "deadline": payload.deadline,
+        "contact_name": payload.contact_name.strip(),
+        "contact_email": payload.contact_email.strip(),
+        "contact_phone": (payload.contact_phone or "").strip() or None,
+        "product_id": payload.product_id,
+        "design_brief": payload.design_brief,
+        "include_bag": bool(payload.include_bag),
+        "roster": [],
+        "status": "open",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.group_orders.insert_one(doc)
+    return {"token": token, "manage_token": manage_token}
+
+
+@api_router.get("/group-orders/{token}")
+async def get_group_order_public(token: str):
+    doc = await db.group_orders.find_one({"token": token})
+    if not doc:
+        raise HTTPException(404, "Group order not found")
+    return _group_order_public(doc)
+
+
+@api_router.post("/group-orders/{token}/join")
+async def join_group_order(token: str, payload: GroupOrderJoin):
+    doc = await db.group_orders.find_one({"token": token})
+    if not doc:
+        raise HTTPException(404, "Group order not found")
+    if doc.get("status") != "open":
+        raise HTTPException(400, "This group order is closed")
+    if not payload.name.strip():
+        raise HTTPException(400, "Name is required")
+    qty = max(1, min(10, int(payload.qty or 1)))
+    member = {
+        "id": str(uuid.uuid4()),
+        "name": payload.name.strip()[:60],
+        "nickname": (payload.nickname or "").strip()[:30] or None,
+        "size": payload.size.strip(),
+        "qty": qty,
+        "note": (payload.note or "").strip()[:120] or None,
+        "joined_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.group_orders.update_one({"token": token}, {"$push": {"roster": member}})
+    return {"ok": True, "member_id": member["id"]}
+
+
+@api_router.get("/group-orders/{token}/manage/{manage_token}")
+async def manage_group_order(token: str, manage_token: str):
+    doc = await db.group_orders.find_one({"token": token})
+    if not doc or doc.get("manage_token") != manage_token:
+        raise HTTPException(404, "Group order not found")
+    return {
+        **_group_order_public(doc),
+        "manage_token": manage_token,
+        "contact_name": doc.get("contact_name"),
+        "contact_email": doc.get("contact_email"),
+        "contact_phone": doc.get("contact_phone"),
+        "roster": doc.get("roster", []),
+    }
+
+
+@api_router.delete("/group-orders/{token}/manage/{manage_token}/members/{member_id}")
+async def remove_group_member(token: str, manage_token: str, member_id: str):
+    doc = await db.group_orders.find_one({"token": token})
+    if not doc or doc.get("manage_token") != manage_token:
+        raise HTTPException(404, "Group order not found")
+    await db.group_orders.update_one({"token": token}, {"$pull": {"roster": {"id": member_id}}})
+    return {"ok": True}
+
+
+@api_router.post("/group-orders/{token}/manage/{manage_token}/close")
+async def close_group_order(token: str, manage_token: str):
+    doc = await db.group_orders.find_one({"token": token})
+    if not doc or doc.get("manage_token") != manage_token:
+        raise HTTPException(404, "Group order not found")
+    await db.group_orders.update_one({"token": token}, {"$set": {"status": "closed", "closed_at": datetime.now(timezone.utc).isoformat()}})
+    return {"ok": True}
+
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    signature = request.headers.get("Stripe-Signature", "")
+    try:
+        if not STRIPE_WEBHOOK_SECRET:
+            # No signing secret configured — accept-and-log rather than hard-fail, so
+            # local/dev setups without a configured webhook still don't 500. Set
+            # STRIPE_WEBHOOK_SECRET in production so signatures are actually verified.
+            logger.warning("STRIPE_WEBHOOK_SECRET not set — skipping signature verification")
+            import json as _json
+            event = _json.loads(body)
+        else:
+            event = construct_webhook_event(body, signature, STRIPE_WEBHOOK_SECRET)
+
+        event_type = event.get("type") if isinstance(event, dict) else event["type"]
+        data_object = (event.get("data") or {}).get("object") if isinstance(event, dict) else event["data"]["object"]
+        session_id = data_object.get("id") if isinstance(data_object, dict) else None
+        payment_status = data_object.get("payment_status") if isinstance(data_object, dict) else None
+
+        if event_type == "checkout.session.completed" and session_id:
+            await db.payment_transactions.update_one(
+                {"session_id": session_id},
+                {
+                    "$set": {
+                        "payment_status": payment_status or "paid",
+                        "status": "completed",
+                        "webhook_event": event_type,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+            )
+        return {"received": True}
+    except _stripe_sdk.error.SignatureVerificationError as e:
+        logger.error(f"Stripe webhook signature error: {e}")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+    except Exception as e:
+        logger.error(f"Stripe webhook error: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Send payment link email if requested
-    if send_email and resend.api_key and customer_email:
-        try:
-            html = f"""
-            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-              <div style="background:#252A34;padding:24px;border-radius:12px 12px 0 0;">
-                <h1 style="color:white;margin:0;font-size:22px;">Your Payment Link</h1>
-                <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;">Swap My Face Tees</p>
-              </div>
-              <div style="background:#f9f9f9;padding:24px;border-radius:0 0 12px 12px;border:1px solid #eee;">
-                <p style="color:#252A34;">Hi {customer_name},</p>
-                <p style="color:#555;">Thanks for your custom order! Here are your order details and payment link:</p>
 
-                <div style="background:white;border-radius:8px;padding:16px;margin:16px 0;border:1px solid #eee;">
-                  <p style="margin:4px 0;"><strong>Order:</strong> {order_number}</p>
-                  <p style="margin:4px 0;"><strong>Description:</strong> {description}</p>
-                  <p style="margin:4px 0;"><strong>Total:</strong> £{amount:.2f}</p>
-                </div>
+# ---------- Admin Auth ----------
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
 
-                <p style="color:#555;font-size:14px;">Once payment is received we'll create your digital proof and send it for your approval before anything is printed.</p>
 
-                <div style="text-align:center;padding:24px 0;">
-                  <a href="{session.url}"
-                     style="background:#FF2E63;color:white;padding:16px 40px;border-radius:50px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;">
-                    Pay Now — £{amount:.2f}
-                  </a>
-                </div>
+@api_router.post("/auth/login")
+async def admin_login(payload: LoginRequest, response: Response):
+    email = payload.email.lower().strip()
+    user = await db.users.find_one({"email": email})
+    if not user or not _verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Not an admin account")
+    token = _create_access_token(email)
+    response.set_cookie(
+        key="access_token", value=token, httponly=True, secure=False,
+        samesite="lax", max_age=7 * 24 * 3600, path="/",
+    )
+    return {"token": token, "user": {"email": email, "role": "admin", "name": user.get("name", "Admin")}}
 
-                <p style="color:#999;font-size:12px;text-align:center;">Secure payment powered by Stripe. Questions? WhatsApp us on +44 7822 032847</p>
-              </div>
-            </div>"""
 
-            resend.Emails.send({
-                "from": "Swap My Face Tees <orders@swapmyface.co.uk>",
-                "to": [customer_email],
-                "subject": f"Your Custom Order Payment Link — £{amount:.2f}",
-                "html": html,
-            })
-        except Exception as e:
-            logger.error(f"Failed to send payment link email: {e}")
+@api_router.post("/auth/logout")
+async def admin_logout(response: Response):
+    response.delete_cookie("access_token", path="/")
+    return {"ok": True}
 
-    return {
-        "checkout_url": session.url,
-        "order_number": order_number,
-        "customer_name": customer_name,
-        "customer_email": customer_email,
-        "customer_phone": customer_phone,
-        "description": description,
-        "amount": amount,
-    }
 
-# ============ ADMIN STATS ============
+@api_router.get("/auth/me")
+async def admin_me(current=Depends(require_admin)):
+    return current
 
-@api_router.get("/admin/stats")
-async def get_admin_stats():
-    total_orders = await db.orders.count_documents({})
-    pending_orders = await db.orders.count_documents({"status": "pending"})
-    total_templates = await db.templates.count_documents({})
-    total_photos = await db.photos.count_documents({})
-    orders = await db.orders.find({}, {"total_amount": 1, "_id": 0}).to_list(1000)
-    total_revenue = sum(o.get("total_amount", 0) for o in orders)
-    return {
-        "total_orders": total_orders,
-        "pending_orders": pending_orders,
-        "total_templates": total_templates,
-        "total_photos": total_photos,
-        "total_revenue": round(total_revenue, 2),
-        "currency": "GBP"
-    }
 
-# ============ CUSTOM ORDER ENQUIRIES ============
+# ---------- Customer Q&A ----------
+class QACreate(BaseModel):
+    product_id: str
+    question: str
+    asker_name: Optional[str] = "Customer"
 
-@api_router.post("/custom-order")
-async def submit_custom_order(
-    name: str = Form(...),
-    email: str = Form(...),
-    phone: str = Form(...),
-    template: str = Form(''),
-    quantity: str = Form(''),
-    notes: str = Form(''),
-    photo: Optional[UploadFile] = File(None)
-):
-    # Upload photo to Cloudinary if provided
-    photo_url = None
-    if photo and photo.filename:
-        try:
-            contents = await photo.read()
-            if contents:
-                r2_key = f"custom_orders/{uuid.uuid4()}.jpg"
-                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
-        except Exception as e:
-            logger.error(f"Custom order photo upload failed: {e}")
 
-    # Send email notification via Resend
-    if resend.api_key:
-        try:
-            photo_html = f'<p><strong>Photo:</strong> <a href="{photo_url}">View uploaded photo</a></p>' if photo_url else '<p><strong>Photo:</strong> Not uploaded</p>'
-            html = f"""
-            <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-              <div style="background:#252A34;padding:24px;border-radius:12px 12px 0 0;">
-                <h1 style="color:white;margin:0;font-size:22px;">✨ New Custom Order Enquiry</h1>
-                <p style="color:rgba(255,255,255,0.7);margin:4px 0 0;">Swap My Face Tees</p>
-              </div>
-              <div style="background:#f9f9f9;padding:24px;border-radius:0 0 12px 12px;border:1px solid #eee;">
-                <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
-                  <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">👤 Customer Details</h2>
-                  <p style="margin:4px 0;"><strong>Name:</strong> {name}</p>
-                  <p style="margin:4px 0;"><strong>Email:</strong> <a href="mailto:{email}">{email}</a></p>
-                  <p style="margin:4px 0;"><strong>Phone:</strong> <a href="tel:{phone}">{phone}</a></p>
-                </div>
-                <div style="background:white;border-radius:8px;padding:16px;margin-bottom:16px;border:1px solid #eee;">
-                  <h2 style="margin:0 0 12px;color:#252A34;font-size:16px;">🎨 Order Details</h2>
-                  <p style="margin:4px 0;"><strong>Template:</strong> {template or 'Not specified'}</p>
-                  <p style="margin:4px 0;"><strong>Quantity:</strong> {quantity or 'Not specified'}</p>
-                  <p style="margin:4px 0;"><strong>Notes:</strong> {notes or 'None'}</p>
-                  {photo_html}
-                </div>
-                <div style="text-align:center;padding:8px;">
-                  <a href="https://wa.me/447822032847?text=Hi {name}, thanks for your custom order enquiry!"
-                     style="background:#25D366;color:white;padding:12px 32px;border-radius:50px;text-decoration:none;font-weight:bold;font-size:14px;display:inline-block;">
-                    Reply on WhatsApp →
-                  </a>
-                </div>
-              </div>
-            </div>"""
+class QAAnswer(BaseModel):
+    answer: str
 
-            resend.Emails.send({
-                "from": "Swap My Face Tees <orders@swapmyface.co.uk>",
-                "to": ["support@swapmyface.co.uk"],
-                "reply_to": email,
-                "subject": f"✨ Custom Order Enquiry from {name}",
-                "html": html,
-            })
-        except Exception as e:
-            logger.error(f"Failed to send custom order email: {e}")
 
-    return {"message": "Enquiry received"}
+@api_router.get("/qa/{product_id}")
+async def list_qa(product_id: str):
+    if product_id not in PRODUCTS:
+        raise HTTPException(404, "Product not found")
+    out = []
+    async for d in db.product_qa.find({"product_id": product_id}).sort("asked_at", -1):
+        out.append({
+            "id": d.get("id"),
+            "product_id": d.get("product_id"),
+            "question": d.get("question"),
+            "answer": d.get("answer"),
+            "asker_name": d.get("asker_name") or "Customer",
+            "asked_at": d.get("asked_at"),
+            "answered_at": d.get("answered_at"),
+        })
+    return out
 
-# ============ REVIEWS ============
 
-@api_router.get("/reviews")
-async def get_reviews(approved_only: bool = True):
-    query = {"approved": True} if approved_only else {}
-    reviews = await db.reviews.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
-    return reviews
-
-@api_router.post("/reviews")
-async def submit_review(
-    name: str = Form(...),
-    text: str = Form(...),
-    rating: int = Form(5),
-    location: str = Form(''),
-    event: str = Form(''),
-    photo: Optional[UploadFile] = File(None)
-):
-    photo_url = None
-    if photo and photo.filename:
-        try:
-            contents = await photo.read()
-            if contents:
-                r2_key = f"reviews/{uuid.uuid4()}.jpg"
-                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
-        except Exception as e:
-            logger.error(f"Review photo upload failed: {e}")
-
-    review = {
+@api_router.post("/qa")
+async def create_qa(payload: QACreate):
+    if payload.product_id not in PRODUCTS:
+        raise HTTPException(400, "Unknown product_id")
+    question = (payload.question or "").strip()
+    if len(question) < 5:
+        raise HTTPException(400, "Question is too short")
+    if len(question) > 500:
+        raise HTTPException(400, "Question is too long (max 500 chars)")
+    doc = {
         "id": str(uuid.uuid4()),
-        "name": name,
-        "text": text,
-        "rating": max(1, min(5, rating)),
-        "location": location,
-        "event": event,
-        "photo_url": photo_url,
-        "verified": False,
-        "approved": False,
-        "created_at": datetime.now(timezone.utc).isoformat()
+        "product_id": payload.product_id,
+        "question": question,
+        "answer": None,
+        "asker_name": (payload.asker_name or "Customer").strip()[:60] or "Customer",
+        "asked_at": datetime.now(timezone.utc).isoformat(),
+        "answered_at": None,
     }
-    await db.reviews.insert_one(review)
-    return {"message": "Review submitted for approval"}
+    await db.product_qa.insert_one(doc)
+    return {k: doc[k] for k in ("id", "product_id", "question", "answer", "asker_name", "asked_at", "answered_at")}
 
-@api_router.get("/admin/reviews")
-async def get_all_reviews():
-    reviews = await db.reviews.find({}, {"_id": 0}).sort("created_at", -1).to_list(200)
-    return reviews
 
-@api_router.patch("/admin/reviews/{review_id}")
-async def update_review(review_id: str, updates: dict):
-    allowed = {"name", "text", "rating", "location", "event", "verified", "approved"}
-    clean = {k: v for k, v in updates.items() if k in allowed}
-    if not clean:
-        raise HTTPException(status_code=400, detail="No valid fields to update")
-    result = await db.reviews.update_one({"id": review_id}, {"$set": clean})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Review not found")
-    return {"message": "Review updated"}
+@api_router.post("/admin/qa/{qa_id}/answer", dependencies=[Depends(require_admin)])
+async def answer_qa(qa_id: str, payload: QAAnswer):
+    answer = (payload.answer or "").strip()
+    if len(answer) < 1:
+        raise HTTPException(400, "Answer cannot be empty")
+    res = await db.product_qa.update_one(
+        {"id": qa_id},
+        {"$set": {"answer": answer[:1000], "answered_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(404, "Q&A not found")
+    return {"ok": True}
 
-@api_router.post("/admin/reviews/{review_id}/update")
-async def update_review_with_photo(
-    review_id: str,
-    name: str = Form(...),
-    text: str = Form(...),
-    rating: int = Form(5),
-    location: str = Form(''),
-    event: str = Form(''),
-    verified: str = Form('true'),
-    photo: Optional[UploadFile] = File(None)
-):
-    photo_url = None
-    if photo and photo.filename:
+
+@api_router.delete("/admin/qa/{qa_id}", dependencies=[Depends(require_admin)])
+async def delete_qa(qa_id: str):
+    res = await db.product_qa.delete_one({"id": qa_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Q&A not found")
+    return {"ok": True}
+
+
+@api_router.get("/admin/qa", dependencies=[Depends(require_admin)])
+async def admin_list_all_qa():
+    """Admin overview — all questions across products, unanswered first."""
+    out = []
+    async for d in db.product_qa.find({}).sort("asked_at", -1):
+        out.append({
+            "id": d.get("id"),
+            "product_id": d.get("product_id"),
+            "product_name": PRODUCTS.get(d.get("product_id"), {}).get("name", d.get("product_id")),
+            "question": d.get("question"),
+            "answer": d.get("answer"),
+            "asker_name": d.get("asker_name") or "Customer",
+            "asked_at": d.get("asked_at"),
+            "answered_at": d.get("answered_at"),
+        })
+    out.sort(key=lambda x: (x["answer"] is not None, x["asked_at"] or ""), reverse=True)
+    # unanswered first, then most-recent answered
+    out.sort(key=lambda x: (x["answer"] is None, x["asked_at"] or ""), reverse=True)
+    return out
+
+
+# ============================================================================
+# Object Storage (Emergent R2-style) — for Portfolio + future asset uploads
+# ============================================================================
+import base64 as _base64
+from services.r2_storage import storage_put as _storage_put, storage_get as _storage_get
+
+_OBJ_APP_NAME = "yourownprint"
+
+
+@app.on_event("startup")
+async def _startup_init_storage():
+    # R2 client is created lazily on first use (see services/r2_storage.py);
+    # nothing to pre-warm at boot, but we keep this hook so future storage
+    # backends can plug in here without touching call sites.
+    pass
+
+
+# ============================================================================
+# Portfolio (admin-curated gallery of past prints)
+# ============================================================================
+
+PORTFOLIO_CATEGORIES = [
+    "workwear", "team-kits", "leavers", "sports", "fitness", "hospitality",
+    "schools", "events", "beauty", "barbering", "other",
+    # Carousels / design libraries — same admin CRUD, but consumed by specific pages
+    "fight-night-action",
+    "leavers-front-designs",
+    "leavers-back-designs",
+    "leavers-full-front-designs",
+]
+
+
+class PortfolioCreate(BaseModel):
+    title: str
+    category: str = "other"
+    caption: Optional[str] = ""
+    alt_text: Optional[str] = ""
+    image_data_url: str       # data:image/...;base64,...
+    display_order: int = 0
+    featured: bool = False
+
+
+class PortfolioPatch(BaseModel):
+    title: Optional[str] = None
+    category: Optional[str] = None
+    caption: Optional[str] = None
+    alt_text: Optional[str] = None
+    image_data_url: Optional[str] = None    # provided to replace the image
+    display_order: Optional[int] = None
+    featured: Optional[bool] = None
+    is_hidden: Optional[bool] = None
+
+
+def _parse_data_url(data_url: str, max_bytes: int = 8_000_000) -> Tuple[bytes, str, str]:
+    """Returns (bytes, content_type, ext). Raises HTTPException on invalid input."""
+    if not data_url or not data_url.startswith("data:"):
+        raise HTTPException(400, "image_data_url must be a data: URL")
+    try:
+        head, b64 = data_url.split(",", 1)
+        content_type = head.split(";")[0].replace("data:", "") or "image/png"
+        raw = _base64.b64decode(b64)
+    except Exception:
+        raise HTTPException(400, "invalid data URL")
+    if not content_type.startswith("image/"):
+        raise HTTPException(400, "image content-type required")
+    if len(raw) > max_bytes:
+        raise HTTPException(400, f"image too large (max {max_bytes // 1_000_000}MB)")
+    ext = content_type.split("/")[-1].split("+")[0]
+    return raw, content_type, (ext if ext in {"png", "jpeg", "jpg", "webp", "gif"} else "png")
+
+
+@api_router.get("/portfolio")
+async def list_portfolio(category: Optional[str] = None, featured_only: bool = False, limit: int = 200):
+    q: Dict = {"is_hidden": {"$ne": True}}
+    if category and category != "all":
+        q["category"] = category
+    if featured_only:
+        q["featured"] = True
+    items: List[Dict] = []
+    async for d in db.portfolio.find(q).limit(limit):
+        items.append({
+            "id": d["id"], "title": d.get("title", ""),
+            "category": d.get("category", "other"),
+            "caption": d.get("caption", ""),
+            "alt_text": d.get("alt_text", ""),
+            "image_url": d.get("image_url"),
+            "display_order": d.get("display_order", 0),
+            "featured": bool(d.get("featured", False)),
+            "created_at": d.get("created_at"),
+        })
+    items.sort(key=lambda x: (x["display_order"], x["created_at"] or ""))
+    return {"categories": PORTFOLIO_CATEGORIES, "items": items}
+
+
+@api_router.get("/portfolio/categories")
+async def portfolio_categories():
+    return PORTFOLIO_CATEGORIES
+
+
+@api_router.post("/admin/portfolio", dependencies=[Depends(require_admin)])
+async def admin_create_portfolio(payload: PortfolioCreate):
+    if payload.category not in PORTFOLIO_CATEGORIES:
+        raise HTTPException(400, f"unknown category. Allowed: {PORTFOLIO_CATEGORIES}")
+    raw, content_type, ext = _parse_data_url(payload.image_data_url)
+    item_id = str(uuid.uuid4())
+    storage_path = f"{_OBJ_APP_NAME}/portfolio/{item_id}.{ext}"
+    image_url: str
+    storage_meta: Optional[Dict] = None
+    # Try object storage; fall back to inline base64 if it fails (so admin can still upload)
+    try:
+        storage_meta = _storage_put(storage_path, raw, content_type)
+        image_url = f"/api/portfolio/file/{item_id}.{ext}"
+    except HTTPException:
+        # No storage configured — fall back to inline base64
+        image_url = payload.image_data_url
+        storage_path = ""
+    doc = {
+        "id": item_id,
+        "title": payload.title.strip()[:120],
+        "category": payload.category,
+        "caption": (payload.caption or "")[:600],
+        "alt_text": (payload.alt_text or payload.title)[:200],
+        "image_url": image_url,
+        "storage_path": storage_path,
+        "storage_meta": storage_meta,
+        "content_type": content_type,
+        "display_order": int(payload.display_order or 0),
+        "featured": bool(payload.featured),
+        "is_hidden": False,
+        "size_bytes": len(raw),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.portfolio.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api_router.patch("/admin/portfolio/{item_id}", dependencies=[Depends(require_admin)])
+async def admin_update_portfolio(item_id: str, payload: PortfolioPatch):
+    existing = await db.portfolio.find_one({"id": item_id})
+    if not existing:
+        raise HTTPException(404, "Portfolio item not found")
+    patch: Dict = {}
+    for k in ("title", "category", "caption", "alt_text", "display_order", "featured", "is_hidden"):
+        v = getattr(payload, k)
+        if v is not None:
+            if k == "category" and v not in PORTFOLIO_CATEGORIES:
+                raise HTTPException(400, f"unknown category. Allowed: {PORTFOLIO_CATEGORIES}")
+            patch[k] = v
+    if payload.image_data_url:
+        raw, content_type, ext = _parse_data_url(payload.image_data_url)
+        storage_path = f"{_OBJ_APP_NAME}/portfolio/{item_id}.{ext}"
         try:
-            contents = await photo.read()
-            if contents:
-                r2_key = f"reviews/{uuid.uuid4()}.jpg"
-                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
-        except Exception as e:
-            logger.error(f"Review photo upload failed: {e}")
+            _storage_put(storage_path, raw, content_type)
+            patch["image_url"] = f"/api/portfolio/file/{item_id}.{ext}"
+            patch["storage_path"] = storage_path
+        except HTTPException:
+            patch["image_url"] = payload.image_data_url
+            patch["storage_path"] = ""
+        patch["content_type"] = content_type
+        patch["size_bytes"] = len(raw)
+    patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.portfolio.update_one({"id": item_id}, {"$set": patch})
+    return {"ok": True}
 
-    updates = {
-        "name": name, "text": text,
-        "rating": max(1, min(5, rating)),
-        "location": location, "event": event,
-        "verified": verified.lower() == 'true',
+
+@api_router.delete("/admin/portfolio/{item_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_portfolio(item_id: str):
+    res = await db.portfolio.update_one({"id": item_id}, {"$set": {"is_hidden": True, "deleted_at": datetime.now(timezone.utc).isoformat()}})
+    if res.matched_count == 0:
+        raise HTTPException(404, "Portfolio item not found")
+    return {"ok": True}
+
+
+@api_router.get("/admin/portfolio", dependencies=[Depends(require_admin)])
+async def admin_list_portfolio():
+    items = []
+    async for d in db.portfolio.find({}).sort("display_order", 1):
+        items.append({
+            "id": d["id"], "title": d.get("title", ""),
+            "category": d.get("category", "other"),
+            "caption": d.get("caption", ""),
+            "alt_text": d.get("alt_text", ""),
+            "image_url": d.get("image_url"),
+            "display_order": d.get("display_order", 0),
+            "featured": bool(d.get("featured", False)),
+            "is_hidden": bool(d.get("is_hidden", False)),
+            "created_at": d.get("created_at"),
+            "size_bytes": d.get("size_bytes", 0),
+        })
+    return items
+
+
+@api_router.get("/portfolio/file/{filename}")
+async def portfolio_file(filename: str):
+    # filename = "{uuid}.{ext}"
+    item_id = filename.rsplit(".", 1)[0]
+    doc = await db.portfolio.find_one({"id": item_id, "is_hidden": {"$ne": True}})
+    if not doc or not doc.get("storage_path"):
+        raise HTTPException(404, "File not found")
+    data, ct = _storage_get(doc["storage_path"])
+    return Response(content=data, media_type=doc.get("content_type") or ct)
+
+
+# ---------- Public artwork upload (for configurator design uploads) ----------
+class ArtworkUploadPayload(BaseModel):
+    image_data_url: str
+    filename: Optional[str] = ""
+    purpose: Optional[str] = "artwork"  # informational tag: 'front-artwork' | 'back-artwork' | etc.
+
+
+@api_router.post("/uploads/artwork")
+async def upload_artwork(payload: ArtworkUploadPayload):
+    """Public endpoint used by the configurators to attach print files to quote requests.
+    Stores the file in Emergent Object Storage and returns a public URL served via
+    /api/uploads/artwork/{filename} (auth-free since these are quote attachments)."""
+    raw, content_type, ext = _parse_data_url(payload.image_data_url, max_bytes=10_000_000)
+    item_id = str(uuid.uuid4())
+    storage_path = f"{_OBJ_APP_NAME}/artwork/{item_id}.{ext}"
+    try:
+        _storage_put(storage_path, raw, content_type)
+    except HTTPException:
+        raise HTTPException(500, "Artwork upload failed — storage not configured")
+    doc = {
+        "id": item_id,
+        "storage_path": storage_path,
+        "content_type": content_type,
+        "filename": (payload.filename or f"{item_id}.{ext}")[:200],
+        "purpose": (payload.purpose or "artwork")[:60],
+        "size_bytes": len(raw),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    if photo_url:
-        updates["photo_url"] = photo_url
+    await db.artwork_uploads.insert_one(doc)
+    return {
+        "id": item_id,
+        "url": f"/api/uploads/artwork/{item_id}.{ext}",
+        "filename": doc["filename"],
+        "size_bytes": doc["size_bytes"],
+    }
 
-    result = await db.reviews.update_one({"id": review_id}, {"$set": updates})
-    if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Review not found")
-    return {"message": "Review updated"}
 
-@api_router.delete("/admin/reviews/{review_id}")
-async def delete_review(review_id: str):
-    await db.reviews.delete_one({"id": review_id})
-    return {"message": "Review deleted"}
+@api_router.get("/uploads/artwork/{filename}")
+async def get_artwork(filename: str):
+    item_id = filename.rsplit(".", 1)[0]
+    doc = await db.artwork_uploads.find_one({"id": item_id})
+    if not doc:
+        raise HTTPException(404, "Artwork not found")
+    data, ct = _storage_get(doc["storage_path"])
+    return Response(content=data, media_type=doc.get("content_type") or ct)
 
-@api_router.post("/admin/reviews")
-async def admin_add_review(
-    name: str = Form(...),
-    text: str = Form(...),
-    rating: int = Form(5),
-    location: str = Form(''),
-    event: str = Form(''),
-    verified: str = Form('true'),
-    photo: Optional[UploadFile] = File(None)
-):
-    photo_url = None
-    if photo and photo.filename:
+
+# ============================================================================
+# Site navigation config (admin-editable)
+# ============================================================================
+
+DEFAULT_NAV_CONFIG = {
+    "version": 1,
+    "menu": [
+        {
+            "key": "shop", "label": "Shop", "to": None,
+            "columns": [
+                {"heading": "Featured", "links": [
+                    {"label": "Your Own Print Specials", "to": "/specials", "badge": "Starter"},
+                    {"label": "Kit Your Workforce", "to": "/workforce", "badge": "Bulk"},
+                    {"label": "Workwear", "to": "/workwear"},
+                    {"label": "Portfolio", "to": "/portfolio"},
+                ]},
+                {"heading": "By collection", "links": [
+                    {"label": "Fight Night Tees", "to": "/fight-night-tee"},
+                    {"label": "Leavers' Hoodies", "to": "/leavers-hoodies"},
+                    {"label": "Team Kits", "to": "/team-kits"},
+                    {"label": "Teams & Schools", "to": "/teams-schools"},
+                ]},
+                {"heading": "By garment", "links": [
+                    {"label": "T-shirts", "to": "/shop/t-shirts"},
+                    {"label": "Hoodies", "to": "/shop/hoodies"},
+                    {"label": "Polos", "to": "/shop/polos"},
+                    {"label": "Sweatshirts", "to": "/shop/sweatshirts"},
+                    {"label": "Jackets", "to": "/shop/jackets"},
+                    {"label": "Hi-Vis", "to": "/shop/hi-vis"},
+                    {"label": "Joggers & Trousers", "to": "/shop/bottoms"},
+                    {"label": "Aprons", "to": "/shop/aprons"},
+                    {"label": "Shorts", "to": "/shop/shorts"},
+                    {"label": "Accessories", "to": "/shop/accessories"},
+                ]},
+            ],
+        },
+        {
+            "key": "teams", "label": "Sports & Fitness", "to": None,
+            "columns": [
+                {"heading": "Sports", "links": [
+                    {"label": "Football Kits", "to": "/sports-teams/football"},
+                    {"label": "Rugby Kits", "to": "/sports-teams/rugby"},
+                    {"label": "Team Kits configurator", "to": "/team-kits"},
+                    {"label": "Full Squad Configurator", "to": "/full-squad-configurator", "badge": "New"},
+                ]},
+                {"heading": "Fitness", "links": [
+                    {"label": "Sports Outfit Configurator", "to": "/sports-outfit-configurator", "badge": "New"},
+                    {"label": "Gyms", "to": "/sports-teams/gyms"},
+                    {"label": "Personal Trainers", "to": "/sports-teams/personal-trainers"},
+                    {"label": "Boxing Gyms", "to": "/sports-teams/boxing-gyms"},
+                    {"label": "Thai Boxing", "to": "/sports-teams/thai-boxing"},
+                    {"label": "Kickboxing", "to": "/sports-teams/kick-boxing"},
+                    {"label": "Dance Studios", "to": "/sports-teams/dance-studios"},
+                ]},
+                {"heading": "Schools & Leavers", "links": [
+                    {"label": "Teams & Schools", "to": "/teams-schools"},
+                    {"label": "Leavers' Hoodies", "to": "/leavers-hoodies"},
+                    {"label": "Fight Night Tees", "to": "/fight-night-tee"},
+                ]},
+            ],
+        },
+        {
+            "key": "industries", "label": "Workwear", "to": None,
+            "columns": [
+                {"heading": "Trades & Site", "links": [
+                    {"label": "Construction & Trades", "to": "/industries/construction-trades"},
+                    {"label": "Industrial", "to": "/industries/industrial"},
+                    {"label": "Cleaning & Maintenance", "to": "/industries/cleaning"},
+                    {"label": "Kit Your Workforce", "to": "/workforce", "badge": "Bulk"},
+                ]},
+                {"heading": "Front-of-house", "links": [
+                    {"label": "Healthcare", "to": "/industries/healthcare"},
+                    {"label": "Hospitality & Catering", "to": "/industries/hospitality-catering"},
+                    {"label": "Retail", "to": "/industries/retail"},
+                    {"label": "Beauty & Wellness", "to": "/industries/beauty-wellness"},
+                ]},
+                {"heading": "Office & Field", "links": [
+                    {"label": "Corporate", "to": "/industries/corporate"},
+                    {"label": "Security", "to": "/industries/security"},
+                    {"label": "Sports & Fitness", "to": "/industries/sports-fitness"},
+                    {"label": "All Industries →", "to": "/industries"},
+                ]},
+            ],
+        },
+        {"key": "portfolio", "label": "Portfolio", "to": "/portfolio"},
+        {"key": "design", "label": "Design Your Own", "to": "/design"},
+        {"key": "contact", "label": "Get a quote", "to": "/contact", "cta": True},
+    ],
+}
+
+
+@api_router.get("/navigation")
+async def get_navigation():
+    doc = await db.settings.find_one({"key": "navigation_config"})
+    if doc and doc.get("config"):
+        return doc["config"]
+    return DEFAULT_NAV_CONFIG
+
+
+# ============================================================================
+# Bundle variants — admin-defined brand/tier options for kit bundle products
+# (e.g. AWD / Nike / Umbro / Pro / Standard). Each variant carries its own
+# price, image, description, size guide + display order.
+# ============================================================================
+
+BUNDLE_ELIGIBLE_IDS = {
+    "football-kit-bundle", "football-premium-bundle",
+    "football-kit-front-only", "football-premium-front-only",
+    "rugby-kit-bundle", "rugby-kit-front-only",
+    "training-tracksuit", "training-tee", "training-pack-bundle", "training-pack-front-only",
+    "sports-team-bundle",
+    # Full Squad Configurator set slots
+    "full-squad-match-day", "full-squad-training", "full-squad-tracksuit",
+    # Sports Outfit Configurator set slots (gyms/PTs/boxing)
+    "sports-outfit-training", "sports-outfit-tracksuit",
+}
+
+
+class BundleVariantIn(BaseModel):
+    bundle_product_id: str
+    brand: str = ""
+    name: str
+    description: str = ""
+    price: float
+    image: Optional[str] = None      # data-URL or existing image_url
+    size_guide_table: Optional[List[Dict[str, Any]]] = None
+    display_order: int = 0
+    is_active: bool = True
+
+
+class BundleVariantPatch(BaseModel):
+    brand: Optional[str] = None
+    name: Optional[str] = None
+    description: Optional[str] = None
+    price: Optional[float] = None
+    image: Optional[str] = None
+    size_guide_table: Optional[List[Dict[str, Any]]] = None
+    display_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+def _serialise_variant(d: Dict) -> Dict:
+    return {
+        "id": d["id"],
+        "bundle_product_id": d["bundle_product_id"],
+        "brand": d.get("brand", ""),
+        "name": d.get("name", ""),
+        "description": d.get("description", ""),
+        "price": float(d.get("price") or 0),
+        "image": d.get("image"),
+        "size_guide_table": d.get("size_guide_table") or [],
+        "display_order": int(d.get("display_order") or 0),
+        "is_active": bool(d.get("is_active", True)),
+    }
+
+
+@api_router.get("/bundles/{bundle_id}/variants")
+async def list_bundle_variants(bundle_id: str):
+    """Public — variants shown to customers on the configurator."""
+    out: List[Dict] = []
+    async for d in db.bundle_variants.find({"bundle_product_id": bundle_id, "is_active": True}):
+        out.append(_serialise_variant(d))
+    out.sort(key=lambda x: (x["display_order"], x["price"]))
+    return out
+
+
+@api_router.get("/admin/bundle-variants", dependencies=[Depends(require_admin)])
+async def admin_list_bundle_variants(bundle_id: Optional[str] = None):
+    q: Dict = {}
+    if bundle_id:
+        q["bundle_product_id"] = bundle_id
+    out: List[Dict] = []
+    async for d in db.bundle_variants.find(q):
+        item = _serialise_variant(d)
+        item["created_at"] = d.get("created_at")
+        out.append(item)
+    out.sort(key=lambda x: (x["bundle_product_id"], x["display_order"], x["price"]))
+    # Return meta about eligible bundles too so the admin UI can show a dropdown
+    return {"eligible_bundles": sorted([{"id": pid, "name": PRODUCTS[pid]["name"]} for pid in BUNDLE_ELIGIBLE_IDS if pid in PRODUCTS], key=lambda x: x["name"]), "variants": out}
+
+
+@api_router.post("/admin/bundle-variants", dependencies=[Depends(require_admin)])
+async def admin_create_bundle_variant(payload: BundleVariantIn):
+    if payload.bundle_product_id not in PRODUCTS:
+        raise HTTPException(400, f"Unknown bundle product '{payload.bundle_product_id}'")
+    if payload.bundle_product_id not in BUNDLE_ELIGIBLE_IDS:
+        raise HTTPException(400, f"'{payload.bundle_product_id}' isn't a bundle-eligible product")
+    if payload.price < 0.5:
+        raise HTTPException(400, "Price must be at least £0.50 (Stripe minimum)")
+
+    variant_id = str(uuid.uuid4())
+    image_url = payload.image
+    # If a data-URL was uploaded, store it on the R2/object-storage and return a stable URL
+    if image_url and image_url.startswith("data:"):
+        raw, content_type, ext = _parse_data_url(image_url)
+        storage_path = f"{_OBJ_APP_NAME}/bundle-variants/{variant_id}.{ext}"
         try:
-            contents = await photo.read()
-            if contents:
-                r2_key = f"reviews/{uuid.uuid4()}.jpg"
-                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
-        except Exception as e:
-            logger.error(f"Review photo upload failed: {e}")
+            _storage_put(storage_path, raw, content_type)
+            image_url = f"/api/portfolio/file/{variant_id}.{ext}"
+            # We reuse the portfolio.file endpoint — store a portfolio doc so it can serve
+            await db.portfolio.insert_one({
+                "id": variant_id,
+                "title": f"{payload.brand} {payload.name}".strip() or "Bundle variant",
+                "category": "other", "caption": "Bundle variant image", "alt_text": payload.name,
+                "image_url": image_url, "storage_path": storage_path,
+                "content_type": content_type, "size_bytes": len(raw),
+                "display_order": 9999, "featured": False, "is_hidden": True,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except HTTPException:
+            # Object storage not configured — keep the data-URL inline (works fine, just bigger payload)
+            pass
 
-    review = {
-        "id": str(uuid.uuid4()),
-        "name": name, "text": text,
-        "rating": max(1, min(5, rating)),
-        "location": location, "event": event,
-        "photo_url": photo_url,
-        "verified": verified.lower() == "true",
-        "approved": True,
-        "created_at": datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": variant_id,
+        "bundle_product_id": payload.bundle_product_id,
+        "brand": payload.brand.strip()[:60],
+        "name": payload.name.strip()[:80] or "Variant",
+        "description": (payload.description or "").strip()[:800],
+        "price": round(float(payload.price), 2),
+        "image": image_url,
+        "size_guide_table": payload.size_guide_table or [],
+        "display_order": int(payload.display_order or 0),
+        "is_active": bool(payload.is_active),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    await db.reviews.insert_one(review)
-    review.pop('_id', None)
-    return review
+    await db.bundle_variants.insert_one(doc)
+    return _serialise_variant(doc)
 
-# Include the router in the main app
+
+@api_router.patch("/admin/bundle-variants/{variant_id}", dependencies=[Depends(require_admin)])
+async def admin_update_bundle_variant(variant_id: str, payload: BundleVariantPatch):
+    existing = await db.bundle_variants.find_one({"id": variant_id})
+    if not existing:
+        raise HTTPException(404, "Variant not found")
+    patch: Dict = {}
+    for k in ("brand", "name", "description", "display_order", "is_active", "size_guide_table"):
+        v = getattr(payload, k)
+        if v is not None:
+            patch[k] = v
+    if payload.price is not None:
+        if payload.price < 0.5:
+            raise HTTPException(400, "Price must be at least £0.50")
+        patch["price"] = round(float(payload.price), 2)
+    if payload.image is not None:
+        img = payload.image
+        if img.startswith("data:"):
+            raw, content_type, ext = _parse_data_url(img)
+            storage_path = f"{_OBJ_APP_NAME}/bundle-variants/{variant_id}.{ext}"
+            try:
+                _storage_put(storage_path, raw, content_type)
+                img = f"/api/portfolio/file/{variant_id}.{ext}"
+                await db.portfolio.update_one(
+                    {"id": variant_id},
+                    {"$set": {"id": variant_id, "image_url": img, "storage_path": storage_path,
+                              "content_type": content_type, "size_bytes": len(raw),
+                              "is_hidden": True, "category": "other"}},
+                    upsert=True,
+                )
+            except HTTPException:
+                pass
+        patch["image"] = img
+    patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.bundle_variants.update_one({"id": variant_id}, {"$set": patch})
+    return {"ok": True}
+
+
+@api_router.delete("/admin/bundle-variants/{variant_id}", dependencies=[Depends(require_admin)])
+async def admin_delete_bundle_variant(variant_id: str):
+    res = await db.bundle_variants.delete_one({"id": variant_id})
+    if res.deleted_count == 0:
+        raise HTTPException(404, "Variant not found")
+    return {"ok": True}
+
+
+# ============================================================================
+# Full Squad Configurator — generic multi-set builder (match-day + training + tracksuit)
+# ============================================================================
+
+# Which garments show up under each section. Admin can override via the products catalogue.
+FULL_SQUAD_SECTIONS: List[Dict] = [
+    {
+        "key": "match_day",
+        "title": "Match Day set",
+        "subtitle": "Shirt + shorts + socks — names & numbers on the back, included in the price.",
+        "set_product_id": "full-squad-match-day",     # bundle_product_id used for brand variants
+        "included_items": ["Shirt", "Shorts", "Socks"],
+        "supports_names_numbers": True,
+        "requires_per_player_roster": True,
+    },
+    {
+        "key": "training",
+        "title": "Training set",
+        "subtitle": "Top + shorts + socks — clean front badge, each kit labelled with the player's name.",
+        "set_product_id": "full-squad-training",
+        "included_items": ["Top", "Shorts", "Socks"],
+        "supports_names_numbers": False,
+        "requires_per_player_roster": True,
+    },
+    {
+        "key": "tracksuit",
+        "title": "Tracksuit set",
+        "subtitle": "Hoodie/jacket + joggers — arrival, warm-up and travel wear, labelled per player.",
+        "set_product_id": "full-squad-tracksuit",
+        "included_items": ["Hoodie/Jacket", "Joggers"],
+        "supports_names_numbers": False,
+        "requires_per_player_roster": True,
+    },
+]
+
+# Sports Outfit Configurator (Gyms/PTs/Boxing/Thai/Kick) — a simpler, socks-less two-set builder.
+SPORTS_OUTFIT_SECTIONS: List[Dict] = [
+    {
+        "key": "training",
+        "title": "Training kit",
+        "subtitle": "Top + shorts — perfect for gyms, PTs and combat sports.",
+        "set_product_id": "sports-outfit-training",
+        "included_items": ["Top", "Shorts"],
+    },
+    {
+        "key": "tracksuit",
+        "title": "Tracksuit",
+        "subtitle": "Hoodie + joggers — arrivals, warm-up, seminars.",
+        "set_product_id": "sports-outfit-tracksuit",
+        "included_items": ["Hoodie", "Joggers"],
+    },
+]
+
+# Optional add-on print upcharges (£) — admin can override at settings.full_squad_addons.
+FULL_SQUAD_ADDON_DEFAULTS = {
+    "sleeve_print_price": 2.00,
+    "back_upload_print_price": 4.00,
+    "back_name_and_number_price": 6.00,   # only relevant on non-match-day items if they opt in
+    "gym_bag_addon_price": 4.00,          # printed drawstring gym bag with badge + player name
+}
+
+# Sports Outfit print add-ons — mutually exclusive on the customer side.
+SPORTS_OUTFIT_ADDON_DEFAULTS = {
+    "unbranded_price": 0.00,          # no print
+    "breast_print_price": 3.00,        # small left-breast logo
+    "back_print_price": 4.00,          # centred back print (tops only)
+    "full_front_print_price": 6.00,    # large front print — replaces breast option
+    # Global rule: shorts / joggers / bottoms NEVER get back-print orders.
+}
+
+# Default sock size options (UK shoe-size ranges). Admin can edit via /api/admin/sock-sizes.
+DEFAULT_SOCK_SIZES = ["3–5", "6–8", "9–11", "12–14"]
+
+# Global rule: product IDs (or category matches) that CANNOT receive a back print.
+NO_BACK_PRINT_PRODUCT_IDS = {
+    "football-shorts", "gym-shorts", "performance-leggings",
+    "joggers", "workwear-trousers",
+}
+
+
+async def _brand_variants_for(product_id: str) -> List[Dict]:
+    """Return active brand variants for a set slot product ID, sorted by display_order then price."""
+    out: List[Dict] = []
+    _fields = ["id", "product_id", "brand", "name", "price", "image", "description", "active",
+               "colours", "sizes", "sock_sizes", "size_guide", "included_items", "display_order"]
+    async for d in db.team_kit_brands.find({"product_id": product_id, "active": True}) \
+            .sort([("display_order", 1), ("price", 1)]):
+        out.append({k: d.get(k) for k in _fields})
+    return out
+
+
+async def _get_sock_sizes() -> List[str]:
+    doc = await db.settings.find_one({"key": "sock_size_options"})
+    if doc and isinstance(doc.get("values"), list) and doc["values"]:
+        return [str(s) for s in doc["values"]]
+    return list(DEFAULT_SOCK_SIZES)
+
+
+@api_router.get("/full-squad/config")
+async def get_full_squad_config():
+    """Return the config for the Full Squad Configurator — sections + brand variants + prices."""
+    doc = await db.settings.find_one({"key": "full_squad_addons"}) or {}
+    addons = {**FULL_SQUAD_ADDON_DEFAULTS, **(doc.get("values") or {})}
+    sock_sizes = await _get_sock_sizes()
+    sections: List[Dict] = []
+    for sec in FULL_SQUAD_SECTIONS:
+        set_pid = sec["set_product_id"]
+        base_product = PRODUCTS.get(set_pid, {})
+        variants = await _brand_variants_for(set_pid)
+        # If admin hasn't added any variants for this set slot yet, expose a synthetic "default"
+        # variant so the configurator still works out-of-the-box.
+        if not variants and base_product:
+            variants = [{
+                "id": f"default-{set_pid}",
+                "product_id": set_pid,
+                "brand": "Standard",
+                "name": base_product.get("name", set_pid),
+                "price": float(base_product.get("price", 0)),
+                "image": base_product.get("image", ""),
+                "description": base_product.get("description", ""),
+                "colours": base_product.get("colors") or [],
+                "sizes": base_product.get("sizes") or [],
+                "sock_sizes": sock_sizes,
+                "size_guide": "",
+                "included_items": sec.get("included_items", []),
+                "display_order": 0,
+                "active": True,
+                "is_default": True,
+            }]
+        else:
+            # Fill in fallbacks (colours / sizes / sock_sizes / included_items) from the product record
+            # so admin doesn't have to duplicate them on every variant.
+            for v in variants:
+                if not v.get("colours"):
+                    v["colours"] = base_product.get("colors") or []
+                if not v.get("sizes"):
+                    v["sizes"] = base_product.get("sizes") or []
+                if not v.get("sock_sizes"):
+                    v["sock_sizes"] = sock_sizes
+                if not v.get("included_items"):
+                    v["included_items"] = sec.get("included_items", [])
+        sections.append({**sec, "variants": variants})
+    return {
+        "sections": sections,
+        "addons": addons,
+        "sock_sizes": sock_sizes,
+        "proof_days": 2,
+    }
+
+
+@api_router.get("/sports-outfit/config")
+async def get_sports_outfit_config():
+    """Config for the simpler Gyms/PTs/Boxing sports outfit configurator."""
+    doc = await db.settings.find_one({"key": "sports_outfit_addons"}) or {}
+    addons = {**SPORTS_OUTFIT_ADDON_DEFAULTS, **(doc.get("values") or {})}
+    sections: List[Dict] = []
+    for sec in SPORTS_OUTFIT_SECTIONS:
+        set_pid = sec["set_product_id"]
+        base_product = PRODUCTS.get(set_pid, {})
+        variants = await _brand_variants_for(set_pid)
+        if not variants and base_product:
+            variants = [{
+                "id": f"default-{set_pid}",
+                "product_id": set_pid,
+                "brand": "Standard",
+                "name": base_product.get("name", set_pid),
+                "price": float(base_product.get("price", 0)),
+                "image": base_product.get("image", ""),
+                "description": base_product.get("description", ""),
+                "colours": base_product.get("colors") or [],
+                "sizes": base_product.get("sizes") or [],
+                "size_guide": "",
+                "included_items": sec.get("included_items", []),
+                "display_order": 0,
+                "active": True,
+                "is_default": True,
+            }]
+        else:
+            for v in variants:
+                if not v.get("colours"):
+                    v["colours"] = base_product.get("colors") or []
+                if not v.get("sizes"):
+                    v["sizes"] = base_product.get("sizes") or []
+                if not v.get("included_items"):
+                    v["included_items"] = sec.get("included_items", [])
+        sections.append({**sec, "variants": variants})
+    return {"sections": sections, "addons": addons, "proof_days": 2}
+
+
+@api_router.get("/sock-sizes")
+async def get_sock_sizes():
+    return {"sock_sizes": await _get_sock_sizes()}
+
+
+@api_router.patch("/admin/sock-sizes", dependencies=[Depends(require_admin)])
+async def admin_update_sock_sizes(payload: Dict):
+    values = payload.get("values")
+    if not isinstance(values, list):
+        raise HTTPException(400, "values must be a list of strings")
+    cleaned = [str(v).strip()[:24] for v in values if str(v).strip()][:12]
+    if not cleaned:
+        raise HTTPException(400, "At least one sock size is required")
+    await db.settings.update_one(
+        {"key": "sock_size_options"},
+        {"$set": {"key": "sock_size_options", "values": cleaned,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "values": cleaned}
+
+
+# Configurator addons — extracted to /app/backend/routers/configurator_addons.py.
+# The following endpoints now live there: PATCH /admin/sports-outfit/addons,
+# PATCH /admin/full-squad/addons, GET /admin/configurator-settings.
+
+
+@api_router.patch("/admin/navigation", dependencies=[Depends(require_admin)])
+async def update_navigation(payload: Dict):
+    config = payload.get("config")
+    if not isinstance(config, dict) or not isinstance(config.get("menu"), list):
+        raise HTTPException(400, "config.menu must be a list")
+    # light validation
+    for item in config["menu"]:
+        if "key" not in item or "label" not in item:
+            raise HTTPException(400, "each menu item needs key + label")
+        if "columns" in item:
+            for col in item["columns"]:
+                if "links" not in col or not isinstance(col["links"], list):
+                    raise HTTPException(400, "column.links must be a list")
+                for lnk in col["links"]:
+                    if "label" not in lnk or "to" not in lnk:
+                        raise HTTPException(400, "link needs label + to")
+    config["version"] = int(config.get("version", 1)) + 1
+    await db.settings.update_one(
+        {"key": "navigation_config"},
+        {"$set": {"key": "navigation_config", "config": config,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True, "version": config["version"]}
+
+
+@api_router.post("/admin/navigation/reset", dependencies=[Depends(require_admin)])
+async def reset_navigation():
+    await db.settings.update_one(
+        {"key": "navigation_config"},
+        {"$set": {"key": "navigation_config", "config": DEFAULT_NAV_CONFIG,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return {"ok": True}
+
+
+# ============================================================================
+# Integration keys (admin manages from /admin/integrations)
+# ============================================================================
+
+INTEGRATION_KEYS = {
+    "stripe_api_key": {"label": "Stripe Secret Key", "kind": "secret", "env": "STRIPE_API_KEY",
+                       "help": "From https://dashboard.stripe.com/apikeys — Secret key (sk_live_... or sk_test_...)"},
+    "resend_api_key": {"label": "Resend API Key", "kind": "secret", "env": "RESEND_API_KEY",
+                       "help": "From https://resend.com/api-keys — used for transactional emails (quotes, reviews)."},
+    "removebg_api_key": {"label": "remove.bg API Key", "kind": "secret", "env": "REMOVEBG_API_KEY",
+                         "help": "From https://www.remove.bg/api — background removal in Design Your Own."},
+    "cutoutpro_api_key": {"label": "Cutout.pro API Key", "kind": "secret", "env": "CUTOUTPRO_API_KEY",
+                         "help": "From https://www.cutout.pro/api — AI image effects (sketch, poster)."},
+    "judgeme_shop_token": {"label": "Judge.me Shop Token", "kind": "secret", "env": "JUDGEME_SHOP_TOKEN",
+                            "help": "From your Judge.me dashboard — used to import reviews."},
+    "whatsapp_number": {"label": "WhatsApp Number (E.164)", "kind": "text", "env": "WHATSAPP_NUMBER",
+                         "help": "e.g. +447xxxxxxxxx — appears site-wide and on Get-a-Quote."},
+    "contact_email": {"label": "Contact / Reply-to Email", "kind": "text", "env": "CONTACT_EMAIL",
+                       "help": "Where quote requests and bespoke leavers' enquiries are emailed."},
+}
+
+
+def _mask_secret(val: Optional[str]) -> str:
+    if not val:
+        return ""
+    if len(val) <= 8:
+        return "•" * len(val)
+    return val[:4] + "•" * 6 + val[-4:]
+
+
+@api_router.get("/admin/integrations", dependencies=[Depends(require_admin)])
+async def list_integrations():
+    doc = await db.settings.find_one({"key": "integration_keys"}) or {}
+    saved = doc.get("values") or {}
+    out = []
+    for k, meta in INTEGRATION_KEYS.items():
+        env_val = os.environ.get(meta["env"]) or ""
+        db_val = saved.get(k) or ""
+        effective = db_val or env_val
+        out.append({
+            "key": k,
+            "label": meta["label"],
+            "kind": meta["kind"],
+            "help": meta["help"],
+            "env_var": meta["env"],
+            "is_set": bool(effective),
+            "source": "db" if db_val else ("env" if env_val else "none"),
+            "masked": _mask_secret(effective) if meta["kind"] == "secret" else effective,
+        })
+    return out
+
+
+@api_router.patch("/admin/integrations", dependencies=[Depends(require_admin)])
+async def update_integrations(payload: Dict):
+    values = payload.get("values") or {}
+    if not isinstance(values, dict):
+        raise HTTPException(400, "values must be an object")
+    doc = await db.settings.find_one({"key": "integration_keys"}) or {}
+    saved = doc.get("values") or {}
+    for k, v in values.items():
+        if k not in INTEGRATION_KEYS:
+            raise HTTPException(400, f"unknown integration key: {k}")
+        if v == "" or v is None:
+            saved.pop(k, None)
+        else:
+            saved[k] = str(v).strip()
+    await db.settings.update_one(
+        {"key": "integration_keys"},
+        {"$set": {"key": "integration_keys", "values": saved,
+                  "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    # Hot-apply Stripe key + WhatsApp number for the running process
+    global STRIPE_API_KEY
+    if "stripe_api_key" in values and values["stripe_api_key"]:
+        STRIPE_API_KEY = values["stripe_api_key"]
+    return {"ok": True}
+
+
+from deps import _get_integration_value  # replaces the local duplicate
+
+
+@api_router.get("/site/whatsapp")
+async def get_site_whatsapp():
+    """Public — returns the configured WhatsApp number so frontend can use it."""
+    number = await _get_integration_value("whatsapp_number")
+    return {"number": number or ""}
+
+
+@app.on_event("startup")
+async def _seed_admin_user():
+    try:
+        existing = await db.users.find_one({"email": ADMIN_EMAIL})
+        if existing is None:
+            await db.users.insert_one({
+                "email": ADMIN_EMAIL,
+                "password_hash": _hash_password(ADMIN_PASSWORD),
+                "name": "Admin",
+                "role": "admin",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        elif not _verify_password(ADMIN_PASSWORD, existing.get("password_hash", "")):
+            await db.users.update_one(
+                {"email": ADMIN_EMAIL},
+                {"$set": {"password_hash": _hash_password(ADMIN_PASSWORD)}},
+            )
+        await db.users.create_index("email", unique=True)
+    except Exception as e:
+        # logger is configured further down — print as fallback
+        print(f"admin seed failed: {e}")
+
+
+# ---- Default product-meta seed (non-destructive: only fills empty fields) ----
+def _classify_garment(product: Dict) -> str:
+    pid = product["id"].lower()
+    name = product["name"].lower()
+    if "short" in pid or "short" in name:
+        return "shorts"
+    if "jacket" in pid or "jacket" in name or "varsity" in pid:
+        return "jacket"
+    if "vest" in pid or "vest" in name:
+        return "vest"
+    if "polo" in pid or "polo" in name:
+        return "polo"
+    if "tracksuit" in pid:
+        return "tracksuit"
+    if "hoodie" in pid or "hoodie" in name or "pullover" in pid:
+        return "hoodie"
+    if "sweatshirt" in pid or "crewneck" in pid:
+        return "sweatshirt"
+    if "jersey" in pid or "rugby" in pid or "football" in pid or "cycling" in pid or "hockey" in pid:
+        return "jersey"
+    if "bag" in pid or "drawstring" in pid:
+        return "bag"
+    if "bundle" in pid or "squad-pack" in pid or "training-pack" in pid:
+        return "bundle"
+    return "tee"
+
+
+# UK adult sizing in cm (chest, length, sleeve, waist, inseam) — DTF garment averages.
+_SIZE_TABLE_TEMPLATES = {
+    "tee":        [{"chest": 91},  {"chest": 96},  {"chest": 101}, {"chest": 106}, {"chest": 111}, {"chest": 121}, {"chest": 131}, {"chest": 141}],
+    "polo":       [{"chest": 91},  {"chest": 96},  {"chest": 101}, {"chest": 106}, {"chest": 111}, {"chest": 121}, {"chest": 131}, {"chest": 141}],
+    "vest":       [{"chest": 96},  {"chest": 101}, {"chest": 106}, {"chest": 111}],
+    "jersey":     [{"chest": 91},  {"chest": 96},  {"chest": 101}, {"chest": 106}, {"chest": 111}, {"chest": 121}],
+    "hoodie":     [{"chest": 96, "sleeve": 64},  {"chest": 101, "sleeve": 65}, {"chest": 106, "sleeve": 66}, {"chest": 111, "sleeve": 67}, {"chest": 121, "sleeve": 68}, {"chest": 131, "sleeve": 69}],
+    "sweatshirt": [{"chest": 96, "sleeve": 64},  {"chest": 101, "sleeve": 65}, {"chest": 106, "sleeve": 66}, {"chest": 111, "sleeve": 67}, {"chest": 121, "sleeve": 68}, {"chest": 131, "sleeve": 69}],
+    "jacket":     [{"chest": 96, "sleeve": 64},  {"chest": 101, "sleeve": 65}, {"chest": 106, "sleeve": 66}, {"chest": 111, "sleeve": 67}, {"chest": 121, "sleeve": 68}],
+    "shorts":     [{"waist": 71, "inseam": 25}, {"waist": 76, "inseam": 26}, {"waist": 81, "inseam": 27}, {"waist": 86, "inseam": 28}, {"waist": 91, "inseam": 29}],
+    "tracksuit":  [{"chest": 96, "waist": 76}, {"chest": 101, "waist": 81}, {"chest": 106, "waist": 86}, {"chest": 111, "waist": 91}, {"chest": 121, "waist": 96}],
+}
+
+_TEE_SIZES = ["XS", "S", "M", "L", "XL", "XXL", "3XL", "4XL"]
+_SIZE_LABELS = {
+    "tee": _TEE_SIZES, "polo": _TEE_SIZES,
+    "vest": ["S", "M", "L", "XL"],
+    "jersey": ["XS", "S", "M", "L", "XL", "XXL"],
+    "hoodie": ["XS", "S", "M", "L", "XL", "XXL"],
+    "sweatshirt": ["XS", "S", "M", "L", "XL", "XXL"],
+    "jacket": ["S", "M", "L", "XL", "XXL"],
+    "shorts": ["S", "M", "L", "XL", "XXL"],
+    "tracksuit": ["S", "M", "L", "XL", "XXL"],
+}
+
+
+def _default_size_guide(product: Dict) -> Optional[List[Dict]]:
+    garment_type = _classify_garment(product)
+    rows_tpl = _SIZE_TABLE_TEMPLATES.get(garment_type)
+    if not rows_tpl:
+        return None
+    labels = _SIZE_LABELS.get(garment_type, _TEE_SIZES)
+    # Match length to whichever is shorter (avoid IndexError)
+    n = min(len(rows_tpl), len(labels))
+    rows: List[Dict] = []
+    for i in range(n):
+        row = {"size": labels[i]}
+        row.update(rows_tpl[i])
+        # Add length proportional to chest where applicable
+        if "chest" in row and "length" not in row:
+            base_length = 66 if garment_type in ("tee", "polo", "vest") else 70
+            row["length"] = base_length + (i * 2)
+        rows.append(row)
+    return rows
+
+
+def _default_description(product: Dict) -> str:
+    garment_type = _classify_garment(product)
+    name = product["name"]
+    composition = product.get("composition") or ""
+    brand = product.get("brand") or "Your Own Print"
+    type_blurb = {
+        "tee": f"A go-to {name.lower()} you'll reach for week after week. Soft handfeel, reinforced shoulder seams and a UK-printed DTF transfer that won't crack, peel or fade.",
+        "polo": f"Smart-casual {name.lower()} built to look the part in client meetings and on-site. Self-fabric collar, twin-needle stitching at the hem.",
+        "vest": f"High-vis {name.lower()} engineered for trade and warehouse use. Reflective banding plus an unmissable colourway keep your crew seen on every shift.",
+        "jersey": f"Match-day {name.lower()} cut for movement. Breathable moisture-wicking knit, raglan sleeves and an athletic fit.",
+        "hoodie": f"Premium-weight {name.lower()} that's earned its place as our most-printed garment. Brushed-back fleece, kangaroo pocket, ribbed cuffs and hem.",
+        "sweatshirt": f"Classic crewneck {name.lower()} with a soft brushed inside. Roomy enough to layer, sharp enough to wear solo.",
+        "jacket": f"All-weather {name.lower()} engineered for British conditions. Wind-resistant outer, fleece-backed liner, YKK zip.",
+        "shorts": f"Performance {name.lower()} cut for full range of motion. Elasticated waistband with drawcord, anti-bunch panelling.",
+        "tracksuit": f"Two-piece {name.lower()} for warm-ups, travel days and post-match recovery.",
+        "bag": f"Lightweight {name.lower()} — printed front, perfect leavers' takeaway or team gym bag.",
+        "bundle": f"Pre-built {name.lower()} — everything your squad needs to take to the pitch in one box.",
+    }.get(garment_type, f"A {name.lower()} printed in the UK using DTF — durable transfers that survive hot washes and tumble-dries.")
+
+    parts = [type_blurb]
+    if composition:
+        parts.append(f"\n\nFabric: {composition}.")
+    parts.append("\n\nPrinted in-house in the UK using our DTF (Direct to Film) process — flexible, full-colour and hard-wearing. Wash inside-out at 30°C, do not iron directly over print.")
+    if brand and brand != "Your Own Print":
+        parts.append(f"\n\nGarment by: {brand}.")
+    return "".join(parts)
+
+
+@app.on_event("startup")
+async def _seed_specials_defaults():
+    """One-time seed: flag a sensible starter lineup as Specials-eligible (left-breast only)."""
+    try:
+        marker = await db.settings.find_one({"key": "specials_seed_v2"})
+        if marker is not None:
+            return
+        defaults = ["workwear-tshirt", "polo-shirt", "workwear-sweatshirt", "personalised-tee", "personalised-hoodie", "hi-vis-vest"]
+        for pid in defaults:
+            if pid in PRODUCTS:
+                await db.product_meta.update_one(
+                    {"product_id": pid},
+                    {"$set": {"product_id": pid, "specials_eligible": True,
+                              "allowed_placements": ["left-breast"],
+                              "updated_at": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True,
+                )
+                PRODUCTS[pid]["specials_eligible"] = True
+                PRODUCTS[pid]["allowed_placements"] = ["left-breast"]
+        await db.settings.update_one(
+            {"key": "specials_seed_v2"},
+            {"$set": {"key": "specials_seed_v2", "ran_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"specials seed failed: {e}")
+
+
+@app.on_event("startup")
+async def _seed_industry_tags_defaults():
+    """One-time seed: assign sensible industry tags + gender_fit to existing catalogue."""
+    try:
+        marker = await db.settings.find_one({"key": "industry_seed_v2"})
+        if marker is not None:
+            return
+        # Maps of product_id → industry_tags / gender_fit defaults
+        industry_map = {
+            "workwear-tshirt":     ["construction-trades", "industrial", "cleaning", "trades", "construction", "logistics"],
+            "workwear-sweatshirt": ["construction-trades", "industrial", "cleaning", "trades", "logistics"],
+            "workwear-jacket":     ["construction-trades", "industrial", "logistics", "trades", "construction"],
+            "workwear-trousers":   ["construction-trades", "industrial", "trades", "construction"],
+            "hi-vis-vest":         ["construction-trades", "industrial", "security", "trades", "construction", "logistics"],
+            "polo-shirt":          ["hospitality-catering", "healthcare", "beauty-wellness", "retail", "corporate", "security", "cleaning", "hospitality", "beauty", "hair-beauty", "fitness"],
+            "personalised-tee":    ["hospitality-catering", "beauty-wellness", "retail", "sports-fitness", "hospitality", "beauty", "hair-beauty", "fitness"],
+            "personalised-hoodie": ["sports-fitness", "beauty-wellness", "retail", "corporate", "fitness", "beauty", "hair-beauty"],
+            "bib-apron":           ["hospitality-catering", "beauty-wellness", "retail", "hospitality", "beauty", "hair-beauty"],
+            "waist-apron":         ["hospitality-catering", "retail", "hospitality"],
+            "denim-apron":         ["beauty-wellness", "hospitality-catering", "retail", "hair-beauty", "beauty"],
+            "joggers":             ["sports-fitness", "corporate", "fitness"],
+            "performance-leggings":["sports-fitness", "fitness"],
+            "gym-shorts":          ["sports-fitness", "fitness"],
+        }
+        for pid, tags in industry_map.items():
+            if pid in PRODUCTS:
+                await db.product_meta.update_one(
+                    {"product_id": pid},
+                    {"$set": {"product_id": pid, "industry_tags": tags,
+                              "gender_fit": "unisex",
+                              "updated_at": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True,
+                )
+                PRODUCTS[pid]["industry_tags"] = tags
+                PRODUCTS[pid]["gender_fit"] = "unisex"
+        # Default everything else to unisex too (so filter pills work)
+        for pid, p in PRODUCTS.items():
+            if not p.get("gender_fit"):
+                await db.product_meta.update_one(
+                    {"product_id": pid},
+                    {"$set": {"product_id": pid, "gender_fit": "unisex",
+                              "updated_at": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True,
+                )
+                PRODUCTS[pid]["gender_fit"] = "unisex"
+        await db.settings.update_one(
+            {"key": "industry_seed_v2"},
+            {"$set": {"key": "industry_seed_v2", "ran_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"industry seed failed: {e}")
+
+
+@app.on_event("startup")
+async def _seed_leavers_templates():
+    try:
+        existing = await db.leavers_templates.count_documents({})
+        if existing == 0:
+            for t in DEFAULT_LEAVERS_TEMPLATES:
+                await db.leavers_templates.insert_one({**t, "created_at": datetime.now(timezone.utc).isoformat()})
+    except Exception as e:
+        print(f"leavers templates seed failed: {e}")
+
+
+# ============================================================================
+# Product overrides — admin can edit ANY hardcoded product's name/price/etc.
+# Overrides live in Mongo `product_overrides` and are applied on startup +
+# on write.
+# ============================================================================
+class ProductOverride(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    description: Optional[str] = None
+    image: Optional[str] = None
+    additional_images: Optional[List[str]] = None
+    category: Optional[str] = None
+    gender_fit: Optional[str] = None
+    industry_tags: Optional[List[str]] = None
+    colors: Optional[List[Dict]] = None
+    sizes: Optional[List[str]] = None
+    active: Optional[bool] = None
+
+
+def _apply_product_override(pid: str, ov: Dict) -> None:
+    """Apply an override doc onto the in-memory PRODUCTS entry (skips None values)."""
+    if pid not in PRODUCTS or not ov:
+        return
+    for field in ("name", "price", "description", "image", "additional_images",
+                  "category", "gender_fit", "industry_tags", "colors", "sizes"):
+        val = ov.get(field)
+        if val is not None:
+            PRODUCTS[pid][field] = val
+    if ov.get("active") is False:
+        PRODUCTS[pid]["_hidden"] = True
+    elif ov.get("active") is True:
+        PRODUCTS[pid].pop("_hidden", None)
+
+
+# Snapshot the pristine hardcoded PRODUCTS entries so admin can fully revert an
+# override at runtime (without waiting for a supervisor restart).
+import copy as _copy
+_PRISTINE_PRODUCTS: Dict[str, Dict] = _copy.deepcopy(PRODUCTS)
+
+
+@app.on_event("startup")
+async def _load_product_overrides():
+    try:
+        count = 0
+        async for d in db.product_overrides.find():
+            _apply_product_override(d["product_id"], d)
+            count += 1
+        if count:
+            logging.info(f"Applied {count} product overrides.")
+    except Exception as e:
+        logging.warning(f"Product-override load skipped: {e}")
+
+
+@api_router.patch("/admin/products/{pid}/override", dependencies=[Depends(require_admin)])
+async def upsert_product_override(pid: str, patch: ProductOverride):
+    if pid not in PRODUCTS:
+        raise HTTPException(404, "Product not found")
+    up = patch.model_dump(exclude_none=True)
+    if not up:
+        return {"ok": True, "unchanged": True}
+    up["product_id"] = pid
+    up["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.product_overrides.update_one({"product_id": pid}, {"$set": up}, upsert=True)
+    _apply_product_override(pid, up)
+    return {"ok": True, "override": up}
+
+
+@api_router.delete("/admin/products/{pid}/override", dependencies=[Depends(require_admin)])
+async def clear_product_override(pid: str):
+    r = await db.product_overrides.delete_one({"product_id": pid})
+    # Restore the in-memory PRODUCTS entry to its pristine hardcoded values so the
+    # site reflects the revert immediately (no restart needed).
+    if pid in _PRISTINE_PRODUCTS:
+        PRODUCTS[pid] = _copy.deepcopy(_PRISTINE_PRODUCTS[pid])
+    if r.deleted_count == 0:
+        return {"ok": True, "deleted": 0, "note": "no override existed"}
+    return {"ok": True, "deleted": r.deleted_count}
+
+
+@api_router.get("/admin/products/{pid}/override", dependencies=[Depends(require_admin)])
+async def get_product_override(pid: str):
+    doc = await db.product_overrides.find_one({"product_id": pid})
+    if not doc:
+        return {"product_id": pid, "override": None}
+    doc.pop("_id", None)
+    return {"product_id": pid, "override": doc}
+
+
+# ============================================================================
+# Page copy CMS — extracted to /app/backend/routers/cms_page_copy.py
+# The `PAGE_COPY_SLUGS` allow-list, `PageCopyPatch` model, and CRUD endpoints
+# all live there now.
+# ============================================================================
+from routers.cms_page_copy import PAGE_COPY_SLUGS, PageCopyPatch  # noqa: F401 — re-exported for legacy imports
+
+
+# ============================================================================
+# Configurator addons — extracted to /app/backend/routers/configurator_addons.py
+# ============================================================================
+
+
+# ============================================================================
+# Imported products (one-off bulk import — PenCarrie / manual)
+# ============================================================================
+class ImportedProduct(BaseModel):
+    id: Optional[str] = None
+    name: str
+    price: float
+    category: Optional[str] = "t-shirts"
+    image: str
+    additional_images: Optional[List[str]] = None
+    description: Optional[str] = ""
+    gender_fit: Optional[str] = "unisex"
+    industry_tags: Optional[List[str]] = None
+    colors: Optional[List[Dict]] = None
+    sizes: Optional[List[str]] = None
+    size_upcharges: Optional[Dict[str, float]] = None
+    source: Optional[str] = "manual"
+    source_sku: Optional[str] = ""
+    brand: Optional[str] = ""
+    active: Optional[bool] = True
+
+
+# Keyword → internal category. First match wins. Falls back to "t-shirts".
+_AUTO_CATEGORY_RULES: List[Tuple[str, str]] = [
+    ("apron", "aprons"),
+    ("polo", "polos"),
+    ("hoodie", "hoodies"),
+    ("hoody", "hoodies"),
+    ("sweatshirt", "sweatshirts"),
+    ("sweat top", "sweatshirts"),
+    ("crew", "sweatshirts"),
+    ("jogger", "bottoms"),
+    ("legging", "bottoms"),
+    ("gym short", "bottoms"),
+    ("chino", "bottoms"),
+    ("trouser", "bottoms"),
+    ("cargo", "bottoms"),
+    ("jacket", "jackets"),
+    ("softshell", "jackets"),
+    ("gilet", "jackets"),
+    ("body warmer", "jackets"),
+    ("hi vis", "hi-vis"),
+    ("hi-vis", "hi-vis"),
+    ("hivis", "hi-vis"),
+    ("high visibility", "hi-vis"),
+    ("cap", "hats"),
+    ("beanie", "hats"),
+    ("hat", "hats"),
+    ("bag", "bags"),
+    ("rucksack", "bags"),
+    ("backpack", "bags"),
+    ("tote", "bags"),
+    ("sock", "socks"),
+    ("shirt", "t-shirts"),
+    ("tee", "t-shirts"),
+    ("t-shirt", "t-shirts"),
+]
+
+
+def _auto_category(name: str, description: str = "") -> str:
+    hay = f"{name} {description}".lower()
+    for keyword, category in _AUTO_CATEGORY_RULES:
+        if keyword in hay:
+            return category
+    return "t-shirts"
+
+
+def _apply_imported_product(doc: Dict) -> None:
+    """Merge an imported product doc into in-memory PRODUCTS so all endpoints see it."""
+    pid = doc.get("id")
+    if not pid:
+        return
+    PRODUCTS[pid] = {
+        "id": pid,
+        "name": doc.get("name", ""),
+        "price": float(doc.get("price") or 0),
+        "category": doc.get("category") or "t-shirts",
+        "image": doc.get("image") or "",
+        "additional_images": doc.get("additional_images") or [],
+        "description": doc.get("description") or "",
+        "gender_fit": doc.get("gender_fit") or "unisex",
+        "industry_tags": doc.get("industry_tags") or [],
+        "colors": doc.get("colors") or [],
+        "sizes": doc.get("sizes") or [],
+        "size_upcharges": doc.get("size_upcharges") or {},
+        "_imported": True,
+        "_source": doc.get("source") or "manual",
+        "_brand": doc.get("brand") or "",
+    }
+
+
+@app.on_event("startup")
+async def _load_imported_products():
+    """Hydrate PRODUCTS with any admin-imported products at boot."""
+    try:
+        count = 0
+        async for d in db.imported_products.find({"active": {"$ne": False}}):
+            _apply_imported_product(d)
+            count += 1
+        if count:
+            logging.info(f"Loaded {count} imported products from Mongo.")
+    except Exception as e:
+        logging.warning(f"Imported-product load skipped: {e}")
+
+
+def _slugify_source_sku(name: str, sku: str = "") -> str:
+    import re
+    src = sku or name or "product"
+    s = re.sub(r"[^a-z0-9]+", "-", src.lower()).strip("-")[:60]
+    return s or f"import-{uuid.uuid4().hex[:8]}"
+
+
+@api_router.get("/admin/products/imported", dependencies=[Depends(require_admin)])
+async def list_imported_products():
+    out = []
+    async for d in db.imported_products.find().sort("imported_at", -1):
+        out.append({k: d.get(k) for k in [
+            "id", "name", "price", "category", "image", "description",
+            "gender_fit", "industry_tags", "colors", "sizes", "size_upcharges",
+            "source", "source_sku", "brand", "active", "imported_at",
+        ]})
+    return {"items": out, "total": len(out)}
+
+
+class BulkImportPayload(BaseModel):
+    items: List[Dict]
+    default_source: Optional[str] = "manual"
+    default_brand: Optional[str] = ""
+    default_markup_pct: Optional[float] = 0.0
+    default_gender_fit: Optional[str] = "unisex"
+    dry_run: Optional[bool] = False
+
+
+@api_router.post("/admin/products/bulk-import", dependencies=[Depends(require_admin)])
+async def bulk_import_products(payload: BulkImportPayload):
+    if len(payload.items) > 5000:
+        raise HTTPException(413, "Too many items in one request (max 5000).")
+    now = datetime.now(timezone.utc).isoformat()
+    created: List[Dict] = []
+    skipped: List[Dict] = []
+    for raw in payload.items:
+        try:
+            name = str(raw.get("name") or "").strip()
+            if not name:
+                skipped.append({"reason": "missing name", "row": raw})
+                continue
+            source_sku = str(raw.get("source_sku") or "").strip()
+            pid = str(raw.get("id") or "").strip() or _slugify_source_sku(name, source_sku)
+            price = raw.get("price")
+            if price is None and raw.get("source_price") is not None:
+                sp = float(raw["source_price"])
+                markup = float(raw.get("markup_pct", payload.default_markup_pct or 0))
+                price = round(sp * (1 + markup / 100.0), 2)
+            price = float(price or 0)
+            category = raw.get("category") or _auto_category(name, raw.get("description") or "")
+            doc = {
+                "id": pid,
+                "name": name,
+                "price": price,
+                "category": category,
+                "image": str(raw.get("image") or "").strip(),
+                "additional_images": [str(u).strip() for u in (raw.get("additional_images") or []) if str(u).strip()],
+                "description": str(raw.get("description") or "").strip()[:4000],
+                "gender_fit": (raw.get("gender_fit") or payload.default_gender_fit or "unisex"),
+                "industry_tags": raw.get("industry_tags") or [],
+                "colors": [
+                    {"name": str(c.get("name") or c) if isinstance(c, dict) else str(c),
+                     "hex":  str((c.get("hex") if isinstance(c, dict) else "#cccccc") or "#cccccc")}
+                    for c in (raw.get("colors") or [])
+                ][:24],
+                "sizes": [str(s) for s in (raw.get("sizes") or [])],
+                "size_upcharges": raw.get("size_upcharges") or {},
+                "source": raw.get("source") or payload.default_source or "manual",
+                "source_sku": source_sku,
+                "brand": raw.get("brand") or payload.default_brand or "",
+                "active": bool(raw.get("active", True)),
+                "imported_at": now,
+            }
+            if not payload.dry_run:
+                await db.imported_products.update_one({"id": pid}, {"$set": doc}, upsert=True)
+                _apply_imported_product(doc)
+            created.append({"id": pid, "name": name, "category": category, "price": price})
+        except Exception as e:
+            skipped.append({"reason": str(e)[:200], "row": raw})
+    return {"ok": True, "created": created, "skipped": skipped, "dry_run": payload.dry_run}
+
+
+class ImportedProductPatch(BaseModel):
+    name: Optional[str] = None
+    price: Optional[float] = None
+    category: Optional[str] = None
+    image: Optional[str] = None
+    additional_images: Optional[List[str]] = None
+    description: Optional[str] = None
+    gender_fit: Optional[str] = None
+    industry_tags: Optional[List[str]] = None
+    colors: Optional[List[Dict]] = None
+    sizes: Optional[List[str]] = None
+    size_upcharges: Optional[Dict[str, float]] = None
+    source: Optional[str] = None
+    source_sku: Optional[str] = None
+    brand: Optional[str] = None
+    active: Optional[bool] = None
+
+
+@api_router.patch("/admin/products/imported/{pid}", dependencies=[Depends(require_admin)])
+async def patch_imported_product(pid: str, patch: ImportedProductPatch):
+    existing = await db.imported_products.find_one({"id": pid})
+    if not existing:
+        raise HTTPException(404, "Imported product not found")
+    up = {k: v for k, v in patch.model_dump(exclude_none=True).items()}
+    if up:
+        await db.imported_products.update_one({"id": pid}, {"$set": up})
+        doc = await db.imported_products.find_one({"id": pid})
+        if doc.get("active"):
+            _apply_imported_product(doc)
+        else:
+            PRODUCTS.pop(pid, None)
+    return {"ok": True}
+
+
+@api_router.delete("/admin/products/imported/{pid}", dependencies=[Depends(require_admin)])
+async def delete_imported_product(pid: str):
+    r = await db.imported_products.delete_one({"id": pid})
+    PRODUCTS.pop(pid, None)
+    return {"ok": True, "deleted": r.deleted_count}
+
+
+@app.on_event("startup")
+async def _seed_default_product_meta():
+    """Non-destructive: only fills empty/None fields. Admin overrides remain untouched.
+    Includes a one-time blanket 'bulk pricing on' pass guarded by settings.product_meta_seed_v1."""
+    try:
+        marker = await db.settings.find_one({"key": "product_meta_seed_v1"})
+        first_run = marker is None
+        for pid, p in PRODUCTS.items():
+            existing = await db.product_meta.find_one({"product_id": pid}) or {}
+            patch: Dict = {}
+
+            if not existing.get("description_full") and not p.get("description_full"):
+                patch["description_full"] = _default_description(p)
+
+            if not existing.get("size_guide_table") and not p.get("size_guide_table"):
+                sg = _default_size_guide(p)
+                if sg:
+                    patch["size_guide_table"] = sg
+
+            # One-time blanket enable of bulk pricing (admins can disable per-product after).
+            if first_run and not existing.get("bulk_pricing_enabled") and not p.get("bulk_pricing_enabled"):
+                patch["bulk_pricing_enabled"] = True
+
+            if patch:
+                patch["product_id"] = pid
+                patch["updated_at"] = datetime.now(timezone.utc).isoformat()
+                await db.product_meta.update_one({"product_id": pid}, {"$set": patch}, upsert=True)
+                for k, v in patch.items():
+                    if k not in ("product_id", "updated_at"):
+                        PRODUCTS[pid][k] = v
+
+        if first_run:
+            await db.settings.update_one(
+                {"key": "product_meta_seed_v1"},
+                {"$set": {"key": "product_meta_seed_v1", "ran_at": datetime.now(timezone.utc).isoformat()}},
+                upsert=True,
+            )
+    except Exception as e:
+        print(f"product-meta seed failed: {e}")
+
+
+@app.on_event("startup")
+async def _seed_customer_indexes():
+    """Ensure unique email + TTL on password_reset_tokens.expires_at + login_attempts."""
+    try:
+        await db.customers.create_index("email", unique=True)
+        await db.password_reset_tokens.create_index("expires_at")
+        await db.customer_login_attempts.create_index("email")
+        await db.customer_carts.create_index("customer_id", unique=True)
+        await db.customer_addresses.create_index("customer_id")
+        await db.customer_designs.create_index("customer_id")
+    except Exception as e:
+        print(f"customer index setup failed: {e}")
+
+
+# Kit bundle categorisation — used by the PDP to swap UI (e.g. hide back-print options on
+# front-only bundles) and by admin listings. Keeps things declarative.
+FRONT_ONLY_BUNDLE_IDS = {
+    "football-kit-front-only", "football-premium-front-only",
+    "rugby-kit-front-only", "training-pack-front-only",
+}
+
+
+@app.on_event("startup")
+async def _seed_front_only_bundle_placements():
+    """One-time seed: locks all *-front-only kit bundles to front placements only —
+    no back-print, no back-name/number. Admin overrides win afterwards."""
+    try:
+        marker = await db.settings.find_one({"key": "front_only_placements_seed_v1"})
+        if marker is not None:
+            return
+        FRONT_ONLY_PLACEMENTS = ["left-breast", "right-breast", "full-front", "left-sleeve", "right-sleeve"]
+        for pid in FRONT_ONLY_BUNDLE_IDS:
+            if pid not in PRODUCTS:
+                continue
+            existing = await db.product_meta.find_one({"product_id": pid}) or {}
+            if existing.get("allowed_placements"):
+                # Admin already set explicit placements — respect that.
+                continue
+            await db.product_meta.update_one(
+                {"product_id": pid},
+                {"$set": {
+                    "product_id": pid,
+                    "allowed_placements": FRONT_ONLY_PLACEMENTS,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }},
+                upsert=True,
+            )
+            PRODUCTS[pid]["allowed_placements"] = FRONT_ONLY_PLACEMENTS
+        await db.settings.update_one(
+            {"key": "front_only_placements_seed_v1"},
+            {"$set": {"key": "front_only_placements_seed_v1", "ran_at": datetime.now(timezone.utc).isoformat()}},
+            upsert=True,
+        )
+    except Exception as e:
+        print(f"front-only placements seed failed: {e}")
+
+
+# ============================================================================
+# Router modules (split out from this monolith — see /app/backend/routers/)
+# ============================================================================
+import routers.designer_ai  # noqa: F401 — registers /designer/remove-bg, /designer/ai-effect, /admin/test-email
+import routers.cms_page_copy  # noqa: F401 — registers /page-copy/*, /admin/page-copy/*
+import routers.configurator_addons  # noqa: F401 — registers /admin/full-squad/addons, /admin/sports-outfit/addons, /admin/configurator-settings
+import routers.customer_auth  # noqa: F401 — registers /customer/register, /customer/login, /customer/cart, /customer/orders, addresses, designs
+
+# Legacy helpers still used by leavers/bespoke and /contact — thin wrappers that
+# proxy to the new services.email module. Kept here until those endpoints move
+# into their own router in a follow-up.
+from services.email import send_email as _send_email
+from services.email import shop_notification_recipient as _shop_notification_recipient
+from services.email import email_wrap as _email_wrap
+
+
 app.include_router(api_router)
 
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.on_event("startup")
-async def startup_event():
-    logger.info("PartyTees API v2 starting up...")
-    await db.templates.create_index("id", unique=True)
-    await db.templates.create_index("categories")
-    await db.photos.create_index("id", unique=True)
-    await db.head_cutouts.create_index("id", unique=True)
-    await db.orders.create_index("id", unique=True)
-    await db.orders.create_index("order_number", unique=True)
-    logger.info("Database indexes created")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
+
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
