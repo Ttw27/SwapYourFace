@@ -160,8 +160,8 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily="Anton, Impact, sans-serif"
-        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 2.5 : 0}
+        fontFamily="PLUMP, Anton, Impact, sans-serif"
+        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 3.2 : 0}
         listening={false}
       />
       <Text
@@ -169,7 +169,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily="Anton, Impact, sans-serif"
+        fontFamily="PLUMP, Anton, Impact, sans-serif"
         fill={fill}
         listening={false}
       />
@@ -179,7 +179,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily="Anton, Impact, sans-serif"
+        fontFamily="PLUMP, Anton, Impact, sans-serif"
         fill="rgba(0,0,0,0)"
         draggable
         onClick={onSelect} onTap={onSelect}
