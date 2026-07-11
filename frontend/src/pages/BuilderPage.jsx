@@ -123,7 +123,7 @@ const SizeGuideModal = ({ type, onClose }) => {
 
 // ─── Outside stroke text ──────────────────────────────────────────────────────
 // Uses a Group so the transformer hugs just the visible text, not the full canvas width.
-const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSelected, onSelect, onChange }) => {
+const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSelected, onSelect, onChange, fontFamily = 'Plump' }) => {
   const groupRef = useRef();
   const trRef = useRef();
 
@@ -137,7 +137,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
   if (!text) return null;
 
   const upper = text.toUpperCase();
-  const font = `${fontSize}px Anton, Impact, sans-serif`;
+  const font = `${fontSize}px ${fontFamily}, Impact, sans-serif`;
 
   // Measure text width on a temporary canvas so the group is exactly the right size
   let textWidth = fontSize * upper.length * 0.6; // fallback estimate
@@ -160,7 +160,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily="Fredoka One, Anton, Impact, sans-serif"
+        fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
         fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 3.5 : 0}
         listening={false}
       />
@@ -169,7 +169,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily="Fredoka One, Anton, Impact, sans-serif"
+        fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
         fill={fill}
         listening={false}
       />
@@ -179,7 +179,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily="Fredoka One, Anton, Impact, sans-serif"
+        fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
         fill="rgba(0,0,0,0)"
         draggable
         onClick={onSelect} onTap={onSelect}
@@ -299,9 +299,17 @@ const ColorPicker = ({ label, colors, value, onChange }) => (
   </div>
 );
 
-const TextStylePanel = ({ label, fontSize, setFontSize, color, setColor, stroke, setStroke, strokeWidth, setStrokeWidth }) => (
+const TextStylePanel = ({ label, fontSize, setFontSize, color, setColor, stroke, setStroke, strokeWidth, setStrokeWidth, font, setFont }) => (
   <div className="p-4 bg-gray-50 rounded-xl space-y-3 mt-3">
     <p className="text-xs font-bold text-gray-500 tracking-wide">{label} STYLING</p>
+    <div>
+      <Label className="text-xs text-gray-500 mb-1 block">Font</Label>
+      <select value={font} onChange={(e)=>setFont(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-[#FF2E63]">
+        <option value="Plump">Plump (default)</option>
+        <option value="Anton">Anton</option>
+        <option value="Fredoka One">Fredoka One</option>
+      </select>
+    </div>
     <div><Label className="text-xs text-gray-500 mb-1 block">Font size ({fontSize}px)</Label><Slider value={[fontSize]} min={14} max={64} step={2} onValueChange={([v])=>setFontSize(v)} /></div>
     <div><Label className="text-xs text-gray-500 mb-1 block">Stroke thickness ({strokeWidth===0?'none':strokeWidth})</Label><Slider value={[strokeWidth]} min={0} max={20} step={1} onValueChange={([v])=>setStrokeWidth(v)} /></div>
     <ColorPicker label="Text colour" colors={TEXT_COLORS} value={color} onChange={setColor} />
@@ -362,6 +370,7 @@ export default function BuilderPage() {
   const [line1Color, setLine1Color] = useState('#FFFFFF');
   const [line1Stroke, setLine1Stroke] = useState('#000000');
   const [line1Size, setLine1Size] = useState(36);
+  const [line1Font, setLine1Font] = useState('Plump');
   const [line1SW, setLine1SW] = useState(10);
   const [line1Pos, setLine1Pos] = useState({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT-130 });
 
@@ -371,6 +380,7 @@ export default function BuilderPage() {
   const [line2Size, setLine2Size] = useState(32);
   const [line2SW, setLine2SW] = useState(10);
   const [line2Pos, setLine2Pos] = useState({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT-85 });
+  const [line2Font, setLine2Font] = useState('Plump');
 
   const [line3Text, setLine3Text] = useState('');
   const [line3Color, setLine3Color] = useState('#000000');
@@ -378,6 +388,11 @@ export default function BuilderPage() {
   const [line3Size, setLine3Size] = useState(18);
   const [line3SW, setLine3SW] = useState(0);
   const [line3Pos, setLine3Pos] = useState({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT-44 });
+  const [line3Font, setLine3Font] = useState('Plump');
+
+  // Eraser tool
+  const [isEraserActive, setIsEraserActive] = useState(false);
+  const [eraserSize, setEraserSize] = useState(30);
 
   // T-shirt type, colour & sizes
   const [shirtType, setShirtType] = useState('mens');
@@ -1068,9 +1083,9 @@ export default function BuilderPage() {
                   <Layer>
                     {selectedTemplate&&<TemplateImage imageUrl={selectedTemplate.body_image_url}/>}
                     {headCutout&&<HeadImage imageUrl={`${process.env.REACT_APP_BACKEND_URL}${headCutout.head_url}`} placement={headPlacement} isSelected={selectedElement==='head'} onSelect={()=>setSelectedElement('head')} onChange={(p)=>setHeadPlacement(p)} brightness={headBrightness} contrast={headContrast}/>}
-                    {line1Text&&<DraggableText text={line1Text} x={line1Pos.x} y={line1Pos.y} fontSize={line1Size} fill={line1Color} stroke={line1Stroke} strokeWidth={line1SW} isSelected={selectedElement==='line1'} onSelect={()=>setSelectedElement('line1')} onChange={(u)=>{if(u.x!==undefined)setLine1Pos({x:u.x,y:u.y});if(u.fontSize)setLine1Size(u.fontSize);}}/>}
-                    {line2Text&&<DraggableText text={line2Text} x={line2Pos.x} y={line2Pos.y} fontSize={line2Size} fill={line2Color} stroke={line2Stroke} strokeWidth={line2SW} isSelected={selectedElement==='line2'} onSelect={()=>setSelectedElement('line2')} onChange={(u)=>{if(u.x!==undefined)setLine2Pos({x:u.x,y:u.y});if(u.fontSize)setLine2Size(u.fontSize);}}/>}
-                    {line3Text&&<DraggableText text={line3Text} x={line3Pos.x} y={line3Pos.y} fontSize={line3Size} fill={line3Color} stroke={line3Stroke} strokeWidth={line3SW} isSelected={selectedElement==='line3'} onSelect={()=>setSelectedElement('line3')} onChange={(u)=>{if(u.x!==undefined)setLine3Pos({x:u.x,y:u.y});if(u.fontSize)setLine3Size(u.fontSize);}}/>}
+                    {line1Text&&<DraggableText text={line1Text} x={line1Pos.x} y={line1Pos.y} fontSize={line1Size} fill={line1Color} stroke={line1Stroke} strokeWidth={line1SW} isSelected={selectedElement==='line1'} onSelect={()=>setSelectedElement('line1')} onChange={(u)=>{if(u.x!==undefined)setLine1Pos({x:u.x,y:u.y});if(u.fontSize)setLine1Size(u.fontSize);}} fontFamily={line1Font}/>}
+                    {line2Text&&<DraggableText text={line2Text} x={line2Pos.x} y={line2Pos.y} fontSize={line2Size} fill={line2Color} stroke={line2Stroke} strokeWidth={line2SW} isSelected={selectedElement==='line2'} onSelect={()=>setSelectedElement('line2')} onChange={(u)=>{if(u.x!==undefined)setLine2Pos({x:u.x,y:u.y});if(u.fontSize)setLine2Size(u.fontSize);}} fontFamily={line2Font}/>}
+                    {line3Text&&<DraggableText text={line3Text} x={line3Pos.x} y={line3Pos.y} fontSize={line3Size} fill={line3Color} stroke={line3Stroke} strokeWidth={line3SW} isSelected={selectedElement==='line3'} onSelect={()=>setSelectedElement('line3')} onChange={(u)=>{if(u.x!==undefined)setLine3Pos({x:u.x,y:u.y});if(u.fontSize)setLine3Size(u.fontSize);}} fontFamily={line3Font}/>}
                   </Layer>
                 </Stage>
               </div>
@@ -1111,9 +1126,9 @@ export default function BuilderPage() {
                   <p className="text-xs text-gray-400 text-center"><Move className="w-3 h-3 inline mr-1"/>Drag the face to reposition</p>
                 </div>
               )}
-              {selectedElement==='line1'&&line1Text&&<TextStylePanel label="NAME" fontSize={line1Size} setFontSize={setLine1Size} color={line1Color} setColor={setLine1Color} stroke={line1Stroke} setStroke={setLine1Stroke} strokeWidth={line1SW} setStrokeWidth={setLine1SW}/>}
-              {selectedElement==='line2'&&line2Text&&<TextStylePanel label="EVENT" fontSize={line2Size} setFontSize={setLine2Size} color={line2Color} setColor={setLine2Color} stroke={line2Stroke} setStroke={setLine2Stroke} strokeWidth={line2SW} setStrokeWidth={setLine2SW}/>}
-              {selectedElement==='line3'&&line3Text&&<TextStylePanel label="LOCATION" fontSize={line3Size} setFontSize={setLine3Size} color={line3Color} setColor={setLine3Color} stroke={line3Stroke} setStroke={setLine3Stroke} strokeWidth={line3SW} setStrokeWidth={setLine3SW}/>}
+              {selectedElement==='line1'&&line1Text&&<TextStylePanel label="NAME" fontSize={line1Size} setFontSize={setLine1Size} color={line1Color} setColor={setLine1Color} stroke={line1Stroke} setStroke={setLine1Stroke} strokeWidth={line1SW} setStrokeWidth={setLine1SW} font={line1Font} setFont={setLine1Font}/>}
+              {selectedElement==='line2'&&line2Text&&<TextStylePanel label="EVENT" fontSize={line2Size} setFontSize={setLine2Size} color={line2Color} setColor={setLine2Color} stroke={line2Stroke} setStroke={setLine2Stroke} strokeWidth={line2SW} setStrokeWidth={setLine2SW} font={line2Font} setFont={setLine2Font}/>}
+              {selectedElement==='line3'&&line3Text&&<TextStylePanel label="LOCATION" fontSize={line3Size} setFontSize={setLine3Size} color={line3Color} setColor={setLine3Color} stroke={line3Stroke} setStroke={setLine3Stroke} strokeWidth={line3SW} setStrokeWidth={setLine3SW} font={line3Font} setFont={setLine3Font}/>}
 
               {!selectedElement&&hasText&&<p className="text-center text-xs text-gray-400 mt-3"><Move className="w-3 h-3 inline mr-1"/>Tap text or face on canvas to select and edit</p>}
 
