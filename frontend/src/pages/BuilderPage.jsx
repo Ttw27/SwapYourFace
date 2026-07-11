@@ -347,6 +347,69 @@ const CategoryTabs = ({ active, onChange }) => (
   </div>
 );
 
+const QuickAddPersonModal = ({ open, reuseFace, setReuseFace, reusableFaceUrl, templates, selectedTemplate, setSelectedTemplate, onClose, onAddPerson, isLoading }) => {
+  if (!open) return null;
+  
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <motion.div 
+        initial={{ scale: 0.9, opacity: 0 }}
+        animate={{ scale: 1, opacity: 1 }}
+        className="bg-white rounded-2xl p-6 max-w-lg w-full max-h-[90vh] overflow-y-auto"
+      >
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-xl font-bold">Create Next Person</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X className="w-5 h-5"/></button>
+        </div>
+
+        <div className="space-y-4 mb-6">
+          <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-xl">
+            <input 
+              type="checkbox" 
+              id="reuse-face"
+              checked={reuseFace}
+              onChange={(e) => setReuseFace(e.target.checked)}
+              className="w-5 h-5 accent-[#FF2E63] rounded cursor-pointer"
+            />
+            <label htmlFor="reuse-face" className="flex-1 cursor-pointer">
+              <p className="font-medium text-gray-700">Use same face</p>
+              <p className="text-xs text-gray-500">Reuse the face from Person 1</p>
+            </label>
+          </div>
+        </div>
+
+        <div className="mb-6">
+          <p className="text-sm font-medium text-gray-700 mb-3">Select template (body)</p>
+          <div className="grid grid-cols-2 gap-2 max-h-48 overflow-y-auto">
+            {templates.slice(0, 12).map(t => (
+              <button
+                key={t.id}
+                onClick={() => setSelectedTemplate(t)}
+                className={`p-3 rounded-lg border-2 transition-all text-left ${
+                  selectedTemplate?.id === t.id
+                    ? 'border-[#FF2E63] bg-[#FF2E63]/5'
+                    : 'border-gray-200 hover:border-gray-300'
+                }`}
+              >
+                <p className="font-medium truncate text-sm">{t.name}</p>
+                <p className="text-gray-500 text-xs">{t.category}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <Button 
+          onClick={onAddPerson}
+          disabled={!selectedTemplate || isLoading}
+          className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-4 font-bold uppercase tracking-wider"
+        >
+          {isLoading ? 'Adding...' : '✓ Add to Order'}
+        </Button>
+      </motion.div>
+    </div>
+  );
+};
+
 export default function BuilderPage() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -414,6 +477,11 @@ export default function BuilderPage() {
   // Eraser tool
   const [isEraserActive, setIsEraserActive] = useState(false);
   const [eraserSize, setEraserSize] = useState(30);
+
+  // Quick-add next person modal
+  const [quickAddModalOpen, setQuickAddModalOpen] = useState(false);
+  const [quickAddReuseFace, setQuickAddReuseFace] = useState(true);
+  const [reusableFaceUrl, setReusableFaceUrl] = useState(null);
 
   // T-shirt type, colour & sizes
   const [shirtType, setShirtType] = useState('mens');
@@ -549,7 +617,13 @@ export default function BuilderPage() {
     toast.dismiss('preview');
     addPartyMember({ templateId: selectedTemplate.id, templateName: selectedTemplate.name, headCutoutId: headCutout?.id, titleText: line1Text, subtitleText: `${line2Text}${line3Text?' | '+line3Text:''}`, shirtType, shirtColor, hasBackPrint, backName, backNumber, size: backNumber||'M', headPlacement:{...headPlacement}, originalPhotoUrl: originalPhoto?.original_url, headUrl: headCutout?.head_url, previewUrl });
     toast.success('Person added!');
+    // Store face for quick-add reuse
+    if (!reusableFaceUrl && headCutout?.head_url) {
+      setReusableFaceUrl(`${process.env.REACT_APP_BACKEND_URL}${headCutout.head_url}`);
+    }
     setHeadCutout(null); setOriginalPhoto(null); setBackName(''); setBackNumber('');
+    // Auto-open quick-add modal for next person
+    setTimeout(() => setQuickAddModalOpen(true), 500);
   };
 
   const handleAddPartyToCart = () => {
@@ -1053,6 +1127,9 @@ export default function BuilderPage() {
                               ))}
                             </div>
                           </div>
+                          <Button onClick={() => setQuickAddModalOpen(true)} className="w-full bg-[#08D9D6] hover:bg-[#06B5B2] text-[#252A34] rounded-full py-4 font-bold uppercase tracking-wider mb-3">
+                            ➕ Create Next Person For Order
+                          </Button>
                           <Button onClick={handleAddPartyToCart} className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 text-lg font-bold uppercase tracking-wider">
                             <ShoppingCart className="w-5 h-5 mr-2"/> Add All to Cart (£{(partyMembers.length*pricing.base_price).toFixed(2)})
                           </Button>
@@ -1163,6 +1240,20 @@ export default function BuilderPage() {
 
         </div>
       </div>
+
+      {/* Quick-add person modal */}
+      <QuickAddPersonModal 
+        open={quickAddModalOpen}
+        reuseFace={quickAddReuseFace}
+        setReuseFace={setQuickAddReuseFace}
+        reusableFaceUrl={reusableFaceUrl}
+        templates={templates}
+        selectedTemplate={selectedTemplate}
+        setSelectedTemplate={setSelectedTemplate}
+        onClose={() => setQuickAddModalOpen(false)}
+        onAddPerson={handleAddPartyMember}
+        isLoading={isProcessing}
+      />
     </div>
   );
 }
