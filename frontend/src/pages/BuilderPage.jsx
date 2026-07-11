@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { useSearchParams, useNavigate, Link } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Stage, Layer, Image as KonvaImage, Text, Transformer } from 'react-konva';
@@ -139,13 +139,16 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
   const upper = text.toUpperCase();
   const font = `${fontSize}px ${fontFamily}, Impact, sans-serif`;
 
-  // Measure text width on a temporary canvas so the group is exactly the right size
-  let textWidth = fontSize * upper.length * 0.6; // fallback estimate
-  try {
-    const ctx = document.createElement('canvas').getContext('2d');
-    ctx.font = font;
-    textWidth = ctx.measureText(upper).width;
-  } catch (e) {}
+  // Memoize text width calculation — only recalculate when text or fontSize changes
+  const textWidth = useMemo(() => {
+    let w = fontSize * upper.length * 0.6; // fallback estimate
+    try {
+      const ctx = document.createElement('canvas').getContext('2d');
+      ctx.font = font;
+      w = ctx.measureText(upper).width;
+    } catch (e) {}
+    return w;
+  }, [upper, fontSize, font]);
 
   const gx = x - textWidth / 2;
 
@@ -304,7 +307,25 @@ const TextStylePanel = ({ label, fontSize, setFontSize, color, setColor, stroke,
     <p className="text-xs font-bold text-gray-500 tracking-wide">{label} STYLING</p>
     <div>
       <Label className="text-xs text-gray-500 mb-1 block">Font</Label>
-      <select value={font} onChange={(e)=>setFont(e.target.value)} className="w-full px-3 py-2 border rounded-lg text-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-[#FF2E63]">
+      <select 
+        value={font} 
+        onChange={(e)=>setFont(e.target.value)}
+        style={{
+          width: '100%',
+          padding: '8px 12px',
+          border: '1px solid #d1d5db',
+          borderRadius: '6px',
+          fontSize: '14px',
+          backgroundColor: '#ffffff',
+          color: '#1f2937',
+          appearance: 'none',
+          cursor: 'pointer',
+          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%231f2937' d='M1 1l5 5 5-5'/%3E%3C/svg%3E")`,
+          backgroundRepeat: 'no-repeat',
+          backgroundPosition: 'right 8px center',
+          paddingRight: '28px'
+        }}
+      >
         <option value="Plump">Plump (default)</option>
         <option value="Anton">Anton</option>
         <option value="Fredoka One">Fredoka One</option>
