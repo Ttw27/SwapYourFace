@@ -164,7 +164,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         x={gx} y={y}
         fontSize={fontSize}
         fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
-        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 1.5 : 0}
+        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 1.0 : 0}
         listening={false}
       />
       <Text
@@ -666,7 +666,7 @@ export default function BuilderPage() {
       setLine2Text('');
       setLine3Text('');
     }
-    setStep(2);
+    setStep(1);  // Go to template selection, not photo upload
     setKeepTextOnReuse(false);
     toast.info('Same face restored — pick a new body template');
   };
