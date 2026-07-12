@@ -164,7 +164,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         x={gx} y={y}
         fontSize={fontSize}
         fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
-        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 1.0 : 0}
+        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 1.5 : 0}
         listening={false}
       />
       <Text
@@ -455,14 +455,14 @@ export default function BuilderPage() {
   const [line1Stroke, setLine1Stroke] = useState('#000000');
   const [line1Size, setLine1Size] = useState(36);
   const [line1Font, setLine1Font] = useState('Plump');
-  const [line1SW, setLine1SW] = useState(10);
+  const [line1SW, setLine1SW] = useState(7);
   const [line1Pos, setLine1Pos] = useState({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT-130 });
 
   const [line2Text, setLine2Text] = useState('');
   const [line2Color, setLine2Color] = useState('#FFFFFF');
   const [line2Stroke, setLine2Stroke] = useState('#000000');
   const [line2Size, setLine2Size] = useState(32);
-  const [line2SW, setLine2SW] = useState(5);
+  const [line2SW, setLine2SW] = useState(3);
   const [line2Pos, setLine2Pos] = useState({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT-85 });
   const [line2Font, setLine2Font] = useState('Plump');
 
