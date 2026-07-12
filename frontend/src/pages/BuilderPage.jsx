@@ -134,6 +134,13 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
     }
   }, [isSelected]);
 
+  // Force redraw when font changes to ensure it's applied
+  useEffect(() => {
+    if (groupRef.current && groupRef.current.getLayer()) {
+      groupRef.current.getLayer().batchDraw();
+    }
+  }, [fontFamily]);
+
   if (!text) return null;
 
   const upper = text.toUpperCase();
