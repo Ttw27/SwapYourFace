@@ -164,7 +164,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         x={gx} y={y}
         fontSize={fontSize}
         fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
-        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 2.0 : 0}
+        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 1.5 : 0}
         listening={false}
       />
       <Text
@@ -658,6 +658,8 @@ export default function BuilderPage() {
     // Restore the previous face
     setHeadCutout(previousHeadCutout);
     setOriginalPhoto(previousOriginalPhoto);
+    // Clear selected template so they pick a NEW one
+    setSelectedTemplate(null);
     // Optionally keep text or clear it
     if (!keepTextOnReuse) {
       setLine1Text('');
