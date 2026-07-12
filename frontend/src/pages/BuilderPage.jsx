@@ -164,7 +164,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         x={gx} y={y}
         fontSize={fontSize}
         fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
-        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 2.5 : 0}
+        fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 2.0 : 0}
         listening={false}
       />
       <Text
@@ -347,7 +347,7 @@ const CategoryTabs = ({ active, onChange }) => (
   </div>
 );
 
-const QuickAddPersonModal = ({ open, onClose, onUseSameFace, onUseDifferentFace, isLoading }) => {
+const QuickAddPersonModal = ({ open, onClose, onUseSameFace, onUseDifferentFace, keepTextOnReuse, setKeepTextOnReuse, isLoading }) => {
   if (!open) return null;
   
   return (
@@ -363,6 +363,22 @@ const QuickAddPersonModal = ({ open, onClose, onUseSameFace, onUseDifferentFace,
         </div>
 
         <p className="text-gray-600 mb-6">How would you like to proceed?</p>
+
+        <div className="space-y-4 mb-6">
+          <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-xl">
+            <input 
+              type="checkbox" 
+              id="keep-text"
+              checked={keepTextOnReuse}
+              onChange={(e) => setKeepTextOnReuse(e.target.checked)}
+              className="w-5 h-5 accent-[#FF2E63] rounded cursor-pointer"
+            />
+            <label htmlFor="keep-text" className="flex-1 cursor-pointer">
+              <p className="font-medium text-gray-700">Keep previous text</p>
+              <p className="text-xs text-gray-500">Reuse the text from Person 1</p>
+            </label>
+          </div>
+        </div>
 
         <div className="space-y-3">
           <Button 
@@ -464,6 +480,9 @@ export default function BuilderPage() {
 
   // Quick-add next person modal
   const [quickAddModalOpen, setQuickAddModalOpen] = useState(false);
+  const [previousHeadCutout, setPreviousHeadCutout] = useState(null);
+  const [previousOriginalPhoto, setPreviousOriginalPhoto] = useState(null);
+  const [keepTextOnReuse, setKeepTextOnReuse] = useState(false);
 
   // T-shirt type, colour & sizes
   const [shirtType, setShirtType] = useState('mens');
@@ -618,6 +637,9 @@ export default function BuilderPage() {
     toast.loading('Saving design preview...', { id: 'preview' });
     const previewUrl = await exportCanvasPreview();
     toast.dismiss('preview');
+    // Save the face for quick-add reuse
+    setPreviousHeadCutout(headCutout);
+    setPreviousOriginalPhoto(originalPhoto);
     addPartyMember({ templateId: selectedTemplate.id, templateName: selectedTemplate.name, headCutoutId: headCutout?.id, titleText: line1Text, subtitleText: `${line2Text}${line3Text?' | '+line3Text:''}`, shirtType, shirtColor, hasBackPrint, backName, backNumber, size: backNumber||'M', headPlacement:{...headPlacement}, originalPhotoUrl: originalPhoto?.original_url, headUrl: headCutout?.head_url, previewUrl });
     toast.success('Person added!');
     setHeadCutout(null); setOriginalPhoto(null); setBackName(''); setBackNumber('');
@@ -632,13 +654,19 @@ export default function BuilderPage() {
 
   // Quick-add handlers
   const handleUseSameFace = () => {
-    // Keep the current face, clear text, go to Step 2 (template selection)
     setQuickAddModalOpen(false);
-    setLine1Text('');
-    setLine2Text('');
-    setLine3Text('');
+    // Restore the previous face
+    setHeadCutout(previousHeadCutout);
+    setOriginalPhoto(previousOriginalPhoto);
+    // Optionally keep text or clear it
+    if (!keepTextOnReuse) {
+      setLine1Text('');
+      setLine2Text('');
+      setLine3Text('');
+    }
     setStep(2);
-    toast.info('Pick a new body template for the same face');
+    setKeepTextOnReuse(false);
+    toast.info('Same face restored — pick a new body template');
   };
 
   const handleUseDifferentFace = () => {
@@ -1244,6 +1272,31 @@ export default function BuilderPage() {
                   <p className="text-xs text-gray-400 text-center"><Move className="w-3 h-3 inline mr-1"/>Drag the face to reposition</p>
                 </div>
               )}
+              
+              {/* Eraser Tool */}
+              <div className="mt-4 p-4 bg-gray-50 rounded-xl space-y-3">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-bold text-gray-500 tracking-wide">ERASER TOOL</p>
+                  <button
+                    onClick={() => setIsEraserActive(!isEraserActive)}
+                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
+                      isEraserActive
+                        ? 'bg-red-500 text-white'
+                        : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
+                    }`}
+                  >
+                    {isEraserActive ? '✓ ON' : 'OFF'}
+                  </button>
+                </div>
+                {isEraserActive && (
+                  <div>
+                    <Label className="text-xs text-gray-500 mb-1 block">Brush size ({eraserSize}px)</Label>
+                    <Slider value={[eraserSize]} min={10} max={100} step={5} onValueChange={([v])=>setEraserSize(v)} />
+                    <p className="text-xs text-gray-400 mt-2">Drag on the photo canvas to erase parts of the image</p>
+                  </div>
+                )}
+              </div>
+
               {selectedElement==='line1'&&line1Text&&<TextStylePanel label="NAME" fontSize={line1Size} setFontSize={setLine1Size} color={line1Color} setColor={setLine1Color} stroke={line1Stroke} setStroke={setLine1Stroke} strokeWidth={line1SW} setStrokeWidth={setLine1SW} font={line1Font} setFont={setLine1Font}/>}
               {selectedElement==='line2'&&line2Text&&<TextStylePanel label="EVENT" fontSize={line2Size} setFontSize={setLine2Size} color={line2Color} setColor={setLine2Color} stroke={line2Stroke} setStroke={setLine2Stroke} strokeWidth={line2SW} setStrokeWidth={setLine2SW} font={line2Font} setFont={setLine2Font}/>}
               {selectedElement==='line3'&&line3Text&&<TextStylePanel label="LOCATION" fontSize={line3Size} setFontSize={setLine3Size} color={line3Color} setColor={setLine3Color} stroke={line3Stroke} setStroke={setLine3Stroke} strokeWidth={line3SW} setStrokeWidth={setLine3SW} font={line3Font} setFont={setLine3Font}/>}
@@ -1267,6 +1320,8 @@ export default function BuilderPage() {
         onClose={() => setQuickAddModalOpen(false)}
         onUseSameFace={handleUseSameFace}
         onUseDifferentFace={handleUseDifferentFace}
+        keepTextOnReuse={keepTextOnReuse}
+        setKeepTextOnReuse={setKeepTextOnReuse}
         isLoading={isProcessing}
       />
     </div>
