@@ -706,6 +706,38 @@ export default function BuilderPage() {
     }
   };
 
+  const handleStaffSaveAll = async () => {
+    if (partyMembers.length === 0) { toast.error('Please add at least one person'); return; }
+    setStaffSaving(true);
+    try {
+      const res = await fetch(`${API}/admin/staff-order`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_name: staffCustomerName || 'Staff Order',
+          items: partyMembers.map(m => ({
+            template_id: m.templateId,
+            template_name: m.templateName,
+            head_url: m.headUrl || '',
+            original_photo_url: m.originalPhotoUrl || '',
+            title_text: m.titleText,
+            subtitle_text: m.subtitleText,
+            head_placement: m.headPlacement,
+            preview_url: m.previewUrl || '',
+          })),
+        })
+      });
+      if (!res.ok) throw new Error('Failed to save');
+      const data = await res.json();
+      toast.success(`Order saved (${partyMembers.length} people)! Downloading files...`);
+      window.open(`${process.env.REACT_APP_BACKEND_URL}/api/orders/${data.order_id}/download`, '_blank');
+    } catch(e) {
+      toast.error('Failed to save order');
+    } finally {
+      setStaffSaving(false);
+    }
+  };
+
   const canProceed = () => step === 1 ? !!selectedTemplate : true;
 
   const goNextStep = () => {
@@ -1049,8 +1081,8 @@ export default function BuilderPage() {
                 <motion.div key="s4" initial={{opacity:0,x:20}} animate={{opacity:1,x:0}} exit={{opacity:0,x:-20}} className="bg-white rounded-2xl shadow-sm p-6">
                   <h3 className="font-['Anton'] text-lg text-[#252A34] mb-4 tracking-wide">4. {builderMode==='bulk'?'SIZES & QUANTITIES':'ADD TO ORDER'}</h3>
 
-                  {/* Staff mode — skip sizes, just save & download */}
-                  {isStaff && (
+                  {/* Staff mode — single design (bulk), skip sizes, just save & download */}
+                  {isStaff && builderMode==='bulk' && (
                     <div className="space-y-4">
                       <div className="p-4 bg-[#FFF9E6] border border-[#FFE600] rounded-xl">
                         <p className="font-bold text-[#252A34] mb-1">Staff Order — {staffCustomerName}</p>
@@ -1061,6 +1093,42 @@ export default function BuilderPage() {
                         <Download className="w-5 h-5" />
                         {staffSaving ? 'Saving...' : 'Save & Download Files'}
                       </Button>
+                    </div>
+                  )}
+
+                  {/* Staff mode — different photo per person, same flow as customer multi-mode but save & download instead of cart */}
+                  {isStaff && builderMode==='multi' && (
+                    <div className="space-y-4">
+                      <div className="p-4 bg-[#FFF9E6] border border-[#FFE600] rounded-xl">
+                        <p className="font-bold text-[#252A34] mb-1">Staff Order — {staffCustomerName}</p>
+                        <p className="text-sm text-gray-600">Add each person, then click Save & Download All to create the order and download every design file. No payment or sizes needed.</p>
+                      </div>
+                      <Button onClick={handleAddPartyMember} disabled={!selectedTemplate||!headCutout} className="w-full bg-[#08D9D6] hover:bg-[#06B5B2] text-[#252A34] rounded-full py-4 font-bold uppercase tracking-wider">
+                        <Plus className="w-5 h-5 mr-2"/> Add Person to Order
+                      </Button>
+                      {partyMembers.length>0&&(
+                        <>
+                          <div className="border-t pt-4">
+                            <h4 className="font-bold text-gray-700 mb-3">People in Order ({partyMembers.length})</h4>
+                            <div className="space-y-2 max-h-52 overflow-y-auto">
+                              {partyMembers.map((m,i)=>(
+                                <div key={m.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
+                                  <div className="w-10 h-10 rounded-full bg-gray-200 overflow-hidden flex-shrink-0">{m.headUrl&&<img src={`${process.env.REACT_APP_BACKEND_URL}${m.headUrl}`} alt="" className="w-full h-full object-cover"/>}</div>
+                                  <div className="flex-1 min-w-0"><p className="font-medium text-gray-700 truncate">{m.titleText||`Person ${i+1}`}</p><p className="text-xs text-gray-500">{m.templateName}</p></div>
+                                  <button onClick={()=>removePartyMember(m.id)} className="text-red-400 hover:text-red-600 p-1"><Trash2 className="w-4 h-4"/></button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <Button onClick={() => setQuickAddModalOpen(true)} className="w-full bg-[#08D9D6] hover:bg-[#06B5B2] text-[#252A34] rounded-full py-4 font-bold uppercase tracking-wider mb-3">
+                            ➕ Create Next Person For Order
+                          </Button>
+                          <Button onClick={handleStaffSaveAll} disabled={staffSaving} className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-6 text-lg font-bold uppercase tracking-wider gap-2">
+                            <Download className="w-5 h-5" />
+                            {staffSaving ? 'Saving...' : `Save & Download All (${partyMembers.length})`}
+                          </Button>
+                        </>
+                      )}
                     </div>
                   )}
 
