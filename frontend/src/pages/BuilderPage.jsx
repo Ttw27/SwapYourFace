@@ -613,17 +613,105 @@ export default function BuilderPage() {
     navigate('/cart');
   };
 
+  // Export canvas as PNG (for printing)
+  const exportDesignPNG = async () => {
+    if (!stageRef.current) {
+      toast.error('Canvas not ready');
+      return null;
+    }
+    
+    try {
+      // Export at 2x scale for print quality
+      const uri = stageRef.current.toDataURL({ pixelRatio: 2 });
+      
+      // Convert base64 to blob
+      const response = await fetch(uri);
+      const blob = await response.blob();
+      
+      return blob;
+    } catch (err) {
+      console.error('Export error:', err);
+      return null;
+    }
+  };
+
+  // Upload PNG to R2
+  const uploadDesignPNG = async (blob) => {
+    if (!blob) return null;
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', blob, `design-${Date.now()}.png`);
+      formData.append('file_type', 'design');
+      
+      const res = await fetch(`${API}/upload-to-r2`, {
+        method: 'POST',
+        body: formData
+      });
+      
+      if (!res.ok) throw new Error('Upload failed');
+      
+      const data = await res.json();
+      return data.url; // Return public URL
+    } catch (err) {
+      console.error('Upload error:', err);
+      return null;
+    }
+  };
+
   const handleAddPartyMember = async () => {
     if (!selectedTemplate) { toast.error('Please select a template first'); return; }
-    toast.loading('Saving design preview...', { id: 'preview' });
-    const previewUrl = await exportCanvasPreview();
-    toast.dismiss('preview');
-    // Save the face for quick-add reuse
-    setPreviousHeadCutout(headCutout);
-    setPreviousOriginalPhoto(originalPhoto);
-    addPartyMember({ templateId: selectedTemplate.id, templateName: selectedTemplate.name, headCutoutId: headCutout?.id, titleText: line1Text, subtitleText: `${line2Text}${line3Text?' | '+line3Text:''}`, shirtType, shirtColor, hasBackPrint, backName, backNumber, size: backNumber||'M', headPlacement:{...headPlacement}, originalPhotoUrl: originalPhoto?.original_url, headUrl: headCutout?.head_url, previewUrl });
-    toast.success('Person added!');
-    setHeadCutout(null); setOriginalPhoto(null); setBackName(''); setBackNumber('');
+    
+    toast.loading('Saving design...', { id: 'saving' });
+    
+    try {
+      // Export canvas preview
+      const previewUrl = await exportCanvasPreview();
+      
+      // Export and upload PNG design
+      let designPngUrl = null;
+      const pngBlob = await exportDesignPNG();
+      if (pngBlob) {
+        toast.loading('Uploading to storage...', { id: 'saving' });
+        designPngUrl = await uploadDesignPNG(pngBlob);
+      }
+      
+      // Save the face for quick-add reuse
+      setPreviousHeadCutout(headCutout);
+      setPreviousOriginalPhoto(originalPhoto);
+      
+      // Add party member with PNG URL
+      addPartyMember({ 
+        templateId: selectedTemplate.id, 
+        templateName: selectedTemplate.name, 
+        headCutoutId: headCutout?.id, 
+        titleText: line1Text, 
+        subtitleText: `${line2Text}${line3Text?' | '+line3Text:''}`, 
+        shirtType, 
+        shirtColor, 
+        hasBackPrint, 
+        backName, 
+        backNumber, 
+        size: backNumber||'M', 
+        headPlacement:{...headPlacement}, 
+        originalPhotoUrl: originalPhoto?.original_url, 
+        headUrl: headCutout?.head_url, 
+        previewUrl,
+        // NEW: Design PNG URL for printing
+        designPngUrl
+      });
+      
+      toast.dismiss('saving');
+      toast.success('✓ Person added!');
+      setHeadCutout(null); 
+      setOriginalPhoto(null); 
+      setBackName(''); 
+      setBackNumber('');
+    } catch (err) {
+      console.error('Error adding party member:', err);
+      toast.dismiss('saving');
+      toast.error('Failed to add person');
+    }
   };
 
   const handleAddPartyToCart = () => {
