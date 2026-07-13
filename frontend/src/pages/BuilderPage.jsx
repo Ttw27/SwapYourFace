@@ -134,12 +134,13 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
     }
   }, [isSelected]);
 
-  // Force redraw when font changes to ensure it's applied
+  // Force redraw when font changes
   useEffect(() => {
     if (groupRef.current && groupRef.current.getLayer()) {
       groupRef.current.getLayer().batchDraw();
     }
   }, [fontFamily]);
+
 
   if (!text) return null;
 
@@ -170,7 +171,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily={fontFamily}
+        fontFamily={`${fontFamily}, Arial, sans-serif`}
         fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 2.5 : 0}
         lineJoin="round"
         lineCap="round"
@@ -181,7 +182,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily={fontFamily}
+        fontFamily={`${fontFamily}, Arial, sans-serif`}
         fill={fill}
         listening={false}
       />
