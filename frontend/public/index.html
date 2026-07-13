@@ -16,12 +16,20 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600&family=Fredoka+One&display=swap" rel="stylesheet" />
     
-    <!-- Font loading detection for Konva -->
+    <!-- Font loading for Konva canvas rendering -->
     <script>
+      // Wait for Google Fonts to load before app renders
       if (document.fonts) {
-        document.fonts.ready.then(() => {
-          console.log('Fonts loaded');
+        Promise.all([
+          document.fonts.load('36px Plump'),
+          document.fonts.load('36px Anton'),
+          document.fonts.load('36px Fredoka One')
+        ]).then(() => {
+          console.log('All fonts loaded');
           window.fontsReady = true;
+        }).catch(e => {
+          console.log('Font loading:', e);
+          window.fontsReady = true; // Continue anyway
         });
       }
     </script>
