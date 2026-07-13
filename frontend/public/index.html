@@ -11,36 +11,16 @@
     <title>Swap My Face - Custom Face T-Shirts</title>
     <link rel="icon" href="/favicon.ico" />
     
-    <!-- Google Fonts: Anton, Fredoka One, Inter -->
+    <!-- Google Fonts: Anton, Fredoka One, Dancing Script, Bebas Neue, Montserrat -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600&family=Fredoka+One&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Anton&family=Dancing+Script:wght@700&family=Bebas+Neue&family=Fredoka+One&family=Inter:wght@400;500;600&family=Montserrat:wght@700&display=swap" rel="stylesheet" />
     
-    <!-- Font loading for Konva canvas rendering -->
-    <script>
-      // Wait for Google Fonts to load before app renders
-      if (document.fonts) {
-        Promise.all([
-          document.fonts.load('36px Plump'),
-          document.fonts.load('36px Anton'),
-          document.fonts.load('36px Fredoka One')
-        ]).then(() => {
-          console.log('All fonts loaded');
-          window.fontsReady = true;
-        }).catch(e => {
-          console.log('Font loading:', e);
-          window.fontsReady = true; // Continue anyway
-        });
-      }
-    </script>
-    
-    <!-- Embedded Plump Font -->
+    <!-- Custom Plump Font from Public Folder -->
     <style>
       @font-face {
         font-family: 'Plump';
-        src: url('data:font/ttf;base64,AAEAAAASAQAABAAgRkZUTWkojTwAAUcoAAAAHEdERUYG7gjCAAFDaAAAAFBHUE9T2ALvwQABRrAAAAB2R1NVQnd8iVMAAUO4AAAC+E9TLzKRFI4dAAABqAAAAGBjbWFwiF6rEgAACaAAAAOWY3Z0IAPkAsQAAA/QAAAACmZwZ20PtC+nAAANOAAAAmVnYXNw//8AAwABQ2AAAAAIZ2x5ZvpvZ/EAABOsAAEhVGhlYWQHJwDHAAABLAAAADZoaGVhBxsEUwAAAWQAAAAkaG10eFmVMcYAAAIIAAAHlmxvY2GeF1ZGAAAP3AAAA85tYXhwAwUAigAAAYgAAAAgbmFtZdMd1TcAATUAAAADBnBvc3T/hcvVAAE4CAAAC1hwcmVwsPIrFAAAD6AAAAAuAAEAAAABAAAAadQ5Xw889QULA+gAAAAA0e5emAAAAADR7l6Y/5r+ogSQBBAAAQAIAAIAAAAAAAAAAQAAAu7/VgAABKf/mv5wBJAA') format('truetype');
-        font-weight: normal;
-        font-style: normal;
+        src: url('/fonts/Plumpfull.ttf') format('truetype');
         font-display: swap;
       }
     </style>
