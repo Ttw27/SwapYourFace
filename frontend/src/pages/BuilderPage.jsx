@@ -613,150 +613,17 @@ export default function BuilderPage() {
     navigate('/cart');
   };
 
-  // Export canvas as PNG (for printing)
-  const exportDesignPNG = async () => {
-    try {
-      if (!stageRef.current) {
-        console.error('Canvas ref not found');
-        return null;
-      }
-      
-      console.log('Exporting canvas...');
-      
-      // Get the stage and export
-      const stage = stageRef.current;
-      
-      // Export at 2x scale for print quality
-      const dataUrl = stage.toDataURL({ 
-        pixelRatio: 2,
-        mimeType: 'image/png'
-      });
-      
-      console.log('Export successful, data URL length:', dataUrl.length);
-      
-      // Convert base64 to blob
-      const response = await fetch(dataUrl);
-      const blob = await response.blob();
-      
-      console.log('Blob created:', blob.size, 'bytes');
-      
-      return blob;
-    } catch (err) {
-      console.error('Canvas export error:', err);
-      toast.error('Failed to export design');
-      return null;
-    }
-  };
-
-  // Upload PNG to R2
-  const uploadDesignPNG = async (blob) => {
-    if (!blob) {
-      console.error('No blob to upload');
-      return null;
-    }
-    
-    try {
-      console.log('Starting R2 upload...');
-      
-      const formData = new FormData();
-      formData.append('file', blob, `design-${Date.now()}.png`);
-      formData.append('file_type', 'design');
-      
-      const res = await fetch(`${API}/upload-to-r2`, {
-        method: 'POST',
-        body: formData
-      });
-      
-      console.log('Upload response status:', res.status);
-      
-      if (!res.ok) {
-        const error = await res.text();
-        console.error('Upload error:', error);
-        throw new Error(`Upload failed: ${res.status}`);
-      }
-      
-      const data = await res.json();
-      console.log('Upload successful:', data.url);
-      
-      return data.url; // Return public URL
-    } catch (err) {
-      console.error('PNG upload error:', err);
-      toast.error('Failed to upload design to storage');
-      return null;
-    }
-  };
-
   const handleAddPartyMember = async () => {
-    if (!selectedTemplate) { 
-      toast.error('Please select a template first'); 
-      return; 
-    }
-    
-    toast.loading('Saving design...', { id: 'saving' });
-    
-    try {
-      console.log('=== Adding Party Member ===');
-      
-      // Export canvas preview
-      const previewUrl = await exportCanvasPreview();
-      console.log('Preview URL:', previewUrl);
-      
-      // Export and upload PNG design
-      let designPngUrl = null;
-      const pngBlob = await exportDesignPNG();
-      
-      if (pngBlob) {
-        console.log('PNG blob ready, uploading to R2...');
-        toast.loading('Uploading to storage...', { id: 'saving' });
-        designPngUrl = await uploadDesignPNG(pngBlob);
-        console.log('Design PNG URL:', designPngUrl);
-      } else {
-        console.warn('Failed to create PNG blob');
-        toast.warning('⚠️ Design export failed (saving without PNG)');
-      }
-      
-      // Save the face for quick-add reuse
-      setPreviousHeadCutout(headCutout);
-      setPreviousOriginalPhoto(originalPhoto);
-      
-      // Add party member with PNG URL
-      console.log('Saving party member with URLs:', {
-        designPngUrl,
-        originalPhotoUrl: originalPhoto?.original_url,
-        headUrl: headCutout?.head_url
-      });
-      
-      addPartyMember({ 
-        templateId: selectedTemplate.id, 
-        templateName: selectedTemplate.name, 
-        headCutoutId: headCutout?.id, 
-        titleText: line1Text, 
-        subtitleText: `${line2Text}${line3Text?' | '+line3Text:''}`, 
-        shirtType, 
-        shirtColor, 
-        hasBackPrint, 
-        backName, 
-        backNumber, 
-        size: backNumber||'M', 
-        headPlacement:{...headPlacement}, 
-        originalPhotoUrl: originalPhoto?.original_url, 
-        headUrl: headCutout?.head_url, 
-        previewUrl,
-        // NEW: Design PNG URL for printing
-        designPngUrl
-      });
-      
-      toast.dismiss('saving');
-      toast.success('✓ Person added!');
-      setHeadCutout(null); 
-      setOriginalPhoto(null); 
-      setBackName(''); 
-      setBackNumber('');
-    } catch (err) {
-      console.error('Error adding party member:', err);
-      toast.dismiss('saving');
-      toast.error('Failed to add person');
-    }
+    if (!selectedTemplate) { toast.error('Please select a template first'); return; }
+    toast.loading('Saving design preview...', { id: 'preview' });
+    const previewUrl = await exportCanvasPreview();
+    toast.dismiss('preview');
+    // Save the face for quick-add reuse
+    setPreviousHeadCutout(headCutout);
+    setPreviousOriginalPhoto(originalPhoto);
+    addPartyMember({ templateId: selectedTemplate.id, templateName: selectedTemplate.name, headCutoutId: headCutout?.id, titleText: line1Text, subtitleText: `${line2Text}${line3Text?' | '+line3Text:''}`, shirtType, shirtColor, hasBackPrint, backName, backNumber, size: backNumber||'M', headPlacement:{...headPlacement}, originalPhotoUrl: originalPhoto?.original_url, headUrl: headCutout?.head_url, previewUrl });
+    toast.success('Person added!');
+    setHeadCutout(null); setOriginalPhoto(null); setBackName(''); setBackNumber('');
   };
 
   const handleAddPartyToCart = () => {
@@ -807,6 +674,10 @@ export default function BuilderPage() {
     if (!selectedTemplate) { toast.error('Please select a template'); return; }
     setStaffSaving(true);
     try {
+      toast.loading('Saving design preview...', { id: 'staff-preview' });
+      const previewUrl = await exportCanvasPreview();
+      toast.dismiss('staff-preview');
+
       const res = await fetch(`${API}/admin/staff-order`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -820,6 +691,7 @@ export default function BuilderPage() {
           subtitle_text: line2Text,
           line3_text: line3Text,
           head_placement: headPlacement,
+          preview_url: previewUrl,
         })
       });
       if (!res.ok) throw new Error('Failed to save');
