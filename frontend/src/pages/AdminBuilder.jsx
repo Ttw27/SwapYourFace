@@ -196,15 +196,31 @@ export default function AdminBuilder() {
     }
   };
 
-  // Download design as image
+  // Download design as high-quality PNG image
   const handleDownload = () => {
-    if (!stageRef.current) return;
-    const uri = stageRef.current.toDataURL();
-    const link = document.createElement('a');
-    link.href = uri;
-    link.download = `design-${Date.now()}.png`;
-    link.click();
-    toast.success('Design downloaded!');
+    if (!stageRef.current) {
+      toast.error('No design to download');
+      return;
+    }
+    
+    try {
+      // Export canvas as PNG at 2x scale for print quality
+      const scale = 2;
+      const uri = stageRef.current.toDataURL({ pixelRatio: scale });
+      
+      // Create download link
+      const link = document.createElement('a');
+      link.href = uri;
+      link.download = `design-${line1Text || 'print'}-${Date.now()}.png`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      toast.success('✓ Design downloaded as PNG (ready for print!)');
+    } catch (err) {
+      console.error('Download error:', err);
+      toast.error('Failed to download design');
+    }
   };
 
   // Reset
