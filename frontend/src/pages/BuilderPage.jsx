@@ -314,32 +314,6 @@ const ColorPicker = ({ label, colors, value, onChange }) => (
 const TextStylePanel = ({ label, fontSize, setFontSize, color, setColor, stroke, setStroke, strokeWidth, setStrokeWidth, font, setFont }) => (
   <div className="p-4 bg-gray-50 rounded-xl space-y-3 mt-3">
     <p className="text-xs font-bold text-gray-500 tracking-wide">{label} STYLING</p>
-    <div>
-      <Label className="text-xs text-gray-500 mb-1 block">Font</Label>
-      <select 
-        value={font} 
-        onChange={(e)=>setFont(e.target.value)}
-        style={{
-          width: '100%',
-          padding: '8px 12px',
-          border: '1px solid #d1d5db',
-          borderRadius: '6px',
-          fontSize: '14px',
-          backgroundColor: '#ffffff',
-          color: '#1f2937',
-          appearance: 'none',
-          cursor: 'pointer',
-          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%231f2937' d='M1 1l5 5 5-5'/%3E%3C/svg%3E")`,
-          backgroundRepeat: 'no-repeat',
-          backgroundPosition: 'right 8px center',
-          paddingRight: '28px'
-        }}
-      >
-        <option value="Plump">Plump (default)</option>
-        <option value="Anton">Anton</option>
-        <option value="Fredoka One">Fredoka One</option>
-      </select>
-    </div>
     <div><Label className="text-xs text-gray-500 mb-1 block">Font size ({fontSize}px)</Label><Slider value={[fontSize]} min={14} max={64} step={2} onValueChange={([v])=>setFontSize(v)} /></div>
     <div><Label className="text-xs text-gray-500 mb-1 block">Stroke thickness ({strokeWidth===0?'none':strokeWidth})</Label><Slider value={[strokeWidth]} min={0} max={20} step={1} onValueChange={([v])=>setStrokeWidth(v)} /></div>
     <ColorPicker label="Text colour" colors={TEXT_COLORS} value={color} onChange={setColor} />
@@ -483,9 +457,6 @@ export default function BuilderPage() {
   const [line3Pos, setLine3Pos] = useState({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT-44 });
   const [line3Font, setLine3Font] = useState('Plump');
 
-  // Eraser tool
-  const [isEraserActive, setIsEraserActive] = useState(false);
-  const [eraserSize, setEraserSize] = useState(30);
 
   // Quick-add next person modal
   const [quickAddModalOpen, setQuickAddModalOpen] = useState(false);
@@ -968,10 +939,47 @@ export default function BuilderPage() {
                   <h3 className="font-['Anton'] text-lg text-[#252A34] mb-1 tracking-wide">3. ADD YOUR TEXT</h3>
                   <p className="text-sm text-gray-500 mb-5 flex items-center gap-1"><Type className="w-4 h-4"/>Click text on canvas to drag and adjust</p>
 
+                  {/* Font Selector */}
+                  <div className="mb-6 p-4 bg-gray-50 rounded-xl">
+                    <p className="text-xs font-bold text-gray-500 tracking-wide mb-3">FONT</p>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => {setLine1Font('Plump'); setLine2Font('Plump'); setLine3Font('Plump');}}
+                        className={`flex-1 py-2 px-3 rounded-lg font-medium text-sm transition-all ${
+                          line1Font === 'Plump'
+                            ? 'bg-[#FF2E63] text-white'
+                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
+                        }`}
+                      >
+                        Default
+                      </button>
+                      <button
+                        onClick={() => {setLine1Font('Anton'); setLine2Font('Anton'); setLine3Font('Anton');}}
+                        className={`flex-1 py-2 px-3 rounded-lg font-medium text-sm transition-all ${
+                          line1Font === 'Anton'
+                            ? 'bg-[#FF2E63] text-white'
+                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
+                        }`}
+                      >
+                        Anton
+                      </button>
+                      <button
+                        onClick={() => {setLine1Font('Fredoka One'); setLine2Font('Fredoka One'); setLine3Font('Fredoka One');}}
+                        className={`flex-1 py-2 px-3 rounded-lg font-medium text-sm transition-all ${
+                          line1Font === 'Fredoka One'
+                            ? 'bg-[#FF2E63] text-white'
+                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
+                        }`}
+                      >
+                        Fredoka
+                      </button>
+                    </div>
+                  </div>
+
                   {[
-                    {num:1,label:'Name',placeholder:"e.g. BRAD'S",val:line1Text,set:setLine1Text,fontSize:line1Size,setFS:setLine1Size,color:line1Color,setC:setLine1Color,stroke:line1Stroke,setSt:setLine1Stroke,sw:line1SW,setSW:setLine1SW,key:'line1'},
-                    {num:2,label:'Event type',placeholder:'e.g. STAG WEEKEND',val:line2Text,set:setLine2Text,fontSize:line2Size,setFS:setLine2Size,color:line2Color,setC:setLine2Color,stroke:line2Stroke,setSt:setLine2Stroke,sw:line2SW,setSW:setLine2SW,key:'line2'},
-                    {num:3,label:'Location & year',placeholder:'e.g. BENIDORM 2025',val:line3Text,set:setLine3Text,fontSize:line3Size,setFS:setLine3Size,color:line3Color,setC:setLine3Color,stroke:line3Stroke,setSt:setLine3Stroke,sw:line3SW,setSW:setLine3SW,key:'line3'},
+                    {num:1,label:'Name',placeholder:"e.g. BRAD'S",val:line1Text,set:setLine1Text,fontSize:line1Size,setFS:setLine1Size,color:line1Color,setC:setLine1Color,stroke:line1Stroke,setSt:setLine1Stroke,sw:line1SW,setSW:setLine1SW,font:line1Font,setFont:setLine1Font,key:'line1'},
+                    {num:2,label:'Event type',placeholder:'e.g. STAG WEEKEND',val:line2Text,set:setLine2Text,fontSize:line2Size,setFS:setLine2Size,color:line2Color,setC:setLine2Color,stroke:line2Stroke,setSt:setLine2Stroke,sw:line2SW,setSW:setLine2SW,font:line2Font,setFont:setLine2Font,key:'line2'},
+                    {num:3,label:'Location & year',placeholder:'e.g. BENIDORM 2025',val:line3Text,set:setLine3Text,fontSize:line3Size,setFS:setLine3Size,color:line3Color,setC:setLine3Color,stroke:line3Stroke,setSt:setLine3Stroke,sw:line3SW,setSW:setLine3SW,font:line3Font,setFont:setLine3Font,key:'line3'},
                   ].map(line=>(
                     <div key={line.key} className="mb-5">
                       <Label className="text-sm font-bold text-gray-700 flex items-center gap-2 mb-1">
@@ -982,7 +990,7 @@ export default function BuilderPage() {
                       {line.val&&(
                         <button onClick={()=>setSelectedElement(line.key)} className="mt-1 text-xs text-[#FF2E63] font-medium">Edit style on canvas</button>
                       )}
-                      {line.val&&<TextStylePanel label={line.label.toUpperCase()} fontSize={line.fontSize} setFontSize={line.setFS} color={line.color} setColor={line.setC} stroke={line.stroke} setStroke={line.setSt} strokeWidth={line.sw} setStrokeWidth={line.setSW} />}
+                      {line.val&&<TextStylePanel label={line.label.toUpperCase()} fontSize={line.fontSize} setFontSize={line.setFS} color={line.color} setColor={line.setC} stroke={line.stroke} setStroke={line.setSt} strokeWidth={line.sw} setStrokeWidth={line.setSW} font={line.font} setFont={line.setFont} />}
                     </div>
                   ))}
 
@@ -1284,29 +1292,6 @@ export default function BuilderPage() {
                 </div>
               )}
               
-              {/* Eraser Tool */}
-              <div className="mt-4 p-4 bg-gray-50 rounded-xl space-y-3">
-                <div className="flex items-center justify-between">
-                  <p className="text-xs font-bold text-gray-500 tracking-wide">ERASER TOOL</p>
-                  <button
-                    onClick={() => setIsEraserActive(!isEraserActive)}
-                    className={`px-3 py-1.5 rounded-full text-xs font-bold transition-all ${
-                      isEraserActive
-                        ? 'bg-red-500 text-white'
-                        : 'bg-gray-200 text-gray-600 hover:bg-gray-300'
-                    }`}
-                  >
-                    {isEraserActive ? '✓ ON' : 'OFF'}
-                  </button>
-                </div>
-                {isEraserActive && (
-                  <div>
-                    <Label className="text-xs text-gray-500 mb-1 block">Brush size ({eraserSize}px)</Label>
-                    <Slider value={[eraserSize]} min={10} max={100} step={5} onValueChange={([v])=>setEraserSize(v)} />
-                    <p className="text-xs text-gray-400 mt-2">Drag on the photo canvas to erase parts of the image</p>
-                  </div>
-                )}
-              </div>
 
               {selectedElement==='line1'&&line1Text&&<TextStylePanel label="NAME" fontSize={line1Size} setFontSize={setLine1Size} color={line1Color} setColor={setLine1Color} stroke={line1Stroke} setStroke={setLine1Stroke} strokeWidth={line1SW} setStrokeWidth={setLine1SW} font={line1Font} setFont={setLine1Font}/>}
               {selectedElement==='line2'&&line2Text&&<TextStylePanel label="EVENT" fontSize={line2Size} setFontSize={setLine2Size} color={line2Color} setColor={setLine2Color} stroke={line2Stroke} setStroke={setLine2Stroke} strokeWidth={line2SW} setStrokeWidth={setLine2SW} font={line2Font} setFont={setLine2Font}/>}
