@@ -615,31 +615,49 @@ export default function BuilderPage() {
 
   // Export canvas as PNG (for printing)
   const exportDesignPNG = async () => {
-    if (!stageRef.current) {
-      toast.error('Canvas not ready');
-      return null;
-    }
-    
     try {
+      if (!stageRef.current) {
+        console.error('Canvas ref not found');
+        return null;
+      }
+      
+      console.log('Exporting canvas...');
+      
+      // Get the stage and export
+      const stage = stageRef.current;
+      
       // Export at 2x scale for print quality
-      const uri = stageRef.current.toDataURL({ pixelRatio: 2 });
+      const dataUrl = stage.toDataURL({ 
+        pixelRatio: 2,
+        mimeType: 'image/png'
+      });
+      
+      console.log('Export successful, data URL length:', dataUrl.length);
       
       // Convert base64 to blob
-      const response = await fetch(uri);
+      const response = await fetch(dataUrl);
       const blob = await response.blob();
+      
+      console.log('Blob created:', blob.size, 'bytes');
       
       return blob;
     } catch (err) {
-      console.error('Export error:', err);
+      console.error('Canvas export error:', err);
+      toast.error('Failed to export design');
       return null;
     }
   };
 
   // Upload PNG to R2
   const uploadDesignPNG = async (blob) => {
-    if (!blob) return null;
+    if (!blob) {
+      console.error('No blob to upload');
+      return null;
+    }
     
     try {
+      console.log('Starting R2 upload...');
+      
       const formData = new FormData();
       formData.append('file', blob, `design-${Date.now()}.png`);
       formData.append('file_type', 'design');
@@ -649,31 +667,52 @@ export default function BuilderPage() {
         body: formData
       });
       
-      if (!res.ok) throw new Error('Upload failed');
+      console.log('Upload response status:', res.status);
+      
+      if (!res.ok) {
+        const error = await res.text();
+        console.error('Upload error:', error);
+        throw new Error(`Upload failed: ${res.status}`);
+      }
       
       const data = await res.json();
+      console.log('Upload successful:', data.url);
+      
       return data.url; // Return public URL
     } catch (err) {
-      console.error('Upload error:', err);
+      console.error('PNG upload error:', err);
+      toast.error('Failed to upload design to storage');
       return null;
     }
   };
 
   const handleAddPartyMember = async () => {
-    if (!selectedTemplate) { toast.error('Please select a template first'); return; }
+    if (!selectedTemplate) { 
+      toast.error('Please select a template first'); 
+      return; 
+    }
     
     toast.loading('Saving design...', { id: 'saving' });
     
     try {
+      console.log('=== Adding Party Member ===');
+      
       // Export canvas preview
       const previewUrl = await exportCanvasPreview();
+      console.log('Preview URL:', previewUrl);
       
       // Export and upload PNG design
       let designPngUrl = null;
       const pngBlob = await exportDesignPNG();
+      
       if (pngBlob) {
+        console.log('PNG blob ready, uploading to R2...');
         toast.loading('Uploading to storage...', { id: 'saving' });
         designPngUrl = await uploadDesignPNG(pngBlob);
+        console.log('Design PNG URL:', designPngUrl);
+      } else {
+        console.warn('Failed to create PNG blob');
+        toast.warning('⚠️ Design export failed (saving without PNG)');
       }
       
       // Save the face for quick-add reuse
@@ -681,6 +720,12 @@ export default function BuilderPage() {
       setPreviousOriginalPhoto(originalPhoto);
       
       // Add party member with PNG URL
+      console.log('Saving party member with URLs:', {
+        designPngUrl,
+        originalPhotoUrl: originalPhoto?.original_url,
+        headUrl: headCutout?.head_url
+      });
+      
       addPartyMember({ 
         templateId: selectedTemplate.id, 
         templateName: selectedTemplate.name, 
