@@ -1232,6 +1232,7 @@ async def create_staff_order(data: dict):
             "subtitleText": data.get("subtitle_text", ""),
             "line3Text": data.get("line3_text", ""),
             "headPlacement": data.get("head_placement", {}),
+            "previewUrl": data.get("preview_url", ""),
             "size": "Custom",
             "quantity": 1,
             "price": 0,
