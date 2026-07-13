@@ -144,7 +144,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
   if (!text) return null;
 
   const upper = text.toUpperCase();
-  const font = `${fontSize}px ${fontFamily}, Impact, sans-serif`;
+  const font = `${fontSize}px ${fontFamily}`;
 
   // Memoize text width calculation — only recalculate when text or fontSize changes
   const textWidth = useMemo(() => {
@@ -170,7 +170,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
+        fontFamily={fontFamily}
         fill={stroke} stroke={stroke} strokeWidth={strokeWidth > 0 ? strokeWidth * 2.5 : 0}
         lineJoin="round"
         lineCap="round"
@@ -181,7 +181,7 @@ const DraggableText = ({ text, x, y, fontSize, fill, stroke, strokeWidth, isSele
         text={upper}
         x={gx} y={y}
         fontSize={fontSize}
-        fontFamily={`${fontFamily}, Anton, Impact, sans-serif`}
+        fontFamily={fontFamily}
         fill={fill}
         listening={false}
       />
