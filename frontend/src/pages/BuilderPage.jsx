@@ -446,7 +446,7 @@ export default function BuilderPage() {
   const [line2Color, setLine2Color] = useState('#FFFFFF');
   const [line2Stroke, setLine2Stroke] = useState('#000000');
   const [line2Size, setLine2Size] = useState(32);
-  const [line2SW, setLine2SW] = useState(5);
+  const [line2SW, setLine2SW] = useState(10);
   const [line2Pos, setLine2Pos] = useState({ x: CANVAS_WIDTH/2, y: CANVAS_HEIGHT-85 });
   const [line2Font, setLine2Font] = useState('Plump');
 
