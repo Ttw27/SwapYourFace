@@ -943,10 +943,10 @@ export default function BuilderPage() {
                   {/* Font Selector */}
                   <div className="mb-6 p-4 bg-gray-50 rounded-xl">
                     <p className="text-xs font-bold text-gray-500 tracking-wide mb-3">FONT</p>
-                    <div className="flex gap-2">
+                    <div className="grid grid-cols-2 gap-2">
                       <button
                         onClick={() => {setLine1Font('Plump'); setLine2Font('Plump'); setLine3Font('Plump');}}
-                        className={`flex-1 py-2 px-3 rounded-lg font-medium text-sm transition-all ${
+                        className={`py-2 px-3 rounded-lg font-medium text-xs transition-all ${
                           line1Font === 'Plump'
                             ? 'bg-[#FF2E63] text-white'
                             : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
@@ -956,7 +956,7 @@ export default function BuilderPage() {
                       </button>
                       <button
                         onClick={() => {setLine1Font('Anton'); setLine2Font('Anton'); setLine3Font('Anton');}}
-                        className={`flex-1 py-2 px-3 rounded-lg font-medium text-sm transition-all ${
+                        className={`py-2 px-3 rounded-lg font-medium text-xs transition-all ${
                           line1Font === 'Anton'
                             ? 'bg-[#FF2E63] text-white'
                             : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
@@ -966,13 +966,43 @@ export default function BuilderPage() {
                       </button>
                       <button
                         onClick={() => {setLine1Font('Fredoka One'); setLine2Font('Fredoka One'); setLine3Font('Fredoka One');}}
-                        className={`flex-1 py-2 px-3 rounded-lg font-medium text-sm transition-all ${
+                        className={`py-2 px-3 rounded-lg font-medium text-xs transition-all ${
                           line1Font === 'Fredoka One'
                             ? 'bg-[#FF2E63] text-white'
                             : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
                         }`}
                       >
                         Fredoka
+                      </button>
+                      <button
+                        onClick={() => {setLine1Font('Dancing Script'); setLine2Font('Dancing Script'); setLine3Font('Dancing Script');}}
+                        className={`py-2 px-3 rounded-lg font-medium text-xs transition-all ${
+                          line1Font === 'Dancing Script'
+                            ? 'bg-[#FF2E63] text-white'
+                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
+                        }`}
+                      >
+                        Script
+                      </button>
+                      <button
+                        onClick={() => {setLine1Font('Bebas Neue'); setLine2Font('Bebas Neue'); setLine3Font('Bebas Neue');}}
+                        className={`py-2 px-3 rounded-lg font-medium text-xs transition-all ${
+                          line1Font === 'Bebas Neue'
+                            ? 'bg-[#FF2E63] text-white'
+                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
+                        }`}
+                      >
+                        Bebas
+                      </button>
+                      <button
+                        onClick={() => {setLine1Font('Montserrat'); setLine2Font('Montserrat'); setLine3Font('Montserrat');}}
+                        className={`py-2 px-3 rounded-lg font-medium text-xs transition-all ${
+                          line1Font === 'Montserrat'
+                            ? 'bg-[#FF2E63] text-white'
+                            : 'bg-white border-2 border-gray-300 text-gray-700 hover:border-[#FF2E63]'
+                        }`}
+                      >
+                        Montserrat
                       </button>
                     </div>
                   </div>
