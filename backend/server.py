@@ -862,11 +862,18 @@ async def download_order_files(order_id: str):
 
                 # Original photo
                 orig = item.get("originalPhotoUrl") or item.get("original_photo_url", "")
-                if orig and orig.startswith("http"):
-                    data = fetch_url(orig)
-                    if data:
-                        ext = orig.split(".")[-1].split("?")[0][:4] or "jpg"
-                        zipf.writestr(f"{p}_OriginalPhoto.{ext}", data)
+                if orig:
+                    if orig.startswith("http"):
+                        data = fetch_url(orig)
+                        if data:
+                            ext = orig.split(".")[-1].split("?")[0][:4] or "jpg"
+                            zipf.writestr(f"{p}_OriginalPhoto.{ext}", data)
+                    elif orig.startswith("/api/files/originals/"):
+                        filename = orig.split("/")[-1]
+                        local = ORIGINALS_DIR / filename
+                        if local.exists():
+                            ext = filename.split(".")[-1] if "." in filename else "jpg"
+                            zipf.write(local, f"{p}_OriginalPhoto.{ext}")
 
                 # Preview
                 preview = item.get("previewUrl", "")
@@ -1213,17 +1220,30 @@ async def bulk_import_templates(data: dict):
 
 @api_router.post("/admin/staff-order")
 async def create_staff_order(data: dict):
-    """Create a staff/custom order from the admin builder — no payment needed"""
+    """Create a staff/custom order from the admin builder — no payment needed.
+    Accepts either a single-person payload (legacy: template_id, head_url, etc.
+    at the top level) or a multi-person payload with an `items` array."""
     order_number = f"STAFF-{datetime.now(timezone.utc).strftime('%Y%m%d')}-{str(uuid.uuid4())[:6].upper()}"
     order_id = str(uuid.uuid4())
 
-    order = {
-        "id": order_id,
-        "order_number": order_number,
-        "customer_name": data.get("customer_name", "Staff Order"),
-        "customer_email": "",
-        "customer_phone": "",
-        "items": [{
+    raw_items = data.get("items")
+    if raw_items:
+        items = [{
+            "templateName": item.get("template_name", ""),
+            "templateId": item.get("template_id", ""),
+            "headUrl": item.get("head_url", ""),
+            "originalPhotoUrl": item.get("original_photo_url", ""),
+            "titleText": item.get("title_text", ""),
+            "subtitleText": item.get("subtitle_text", ""),
+            "line3Text": item.get("line3_text", ""),
+            "headPlacement": item.get("head_placement", {}),
+            "previewUrl": item.get("preview_url", ""),
+            "size": "Custom",
+            "quantity": 1,
+            "price": 0,
+        } for item in raw_items]
+    else:
+        items = [{
             "templateName": data.get("template_name", ""),
             "templateId": data.get("template_id", ""),
             "headUrl": data.get("head_url", ""),
@@ -1236,7 +1256,15 @@ async def create_staff_order(data: dict):
             "size": "Custom",
             "quantity": 1,
             "price": 0,
-        }],
+        }]
+
+    order = {
+        "id": order_id,
+        "order_number": order_number,
+        "customer_name": data.get("customer_name", "Staff Order"),
+        "customer_email": "",
+        "customer_phone": "",
+        "items": items,
         "total_amount": 0,
         "status": "staff_order",
         "order_type": "staff",
