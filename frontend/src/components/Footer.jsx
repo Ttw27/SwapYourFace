@@ -105,10 +105,14 @@ export const Footer = () => {
 
         <div className="border-t border-white/10 pt-6 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs text-gray-500">
           <p>© {new Date().getFullYear()} Swap My Face Tees — TEZL GROUP LTD. All rights reserved.</p>
-          <div className="flex gap-4">
+          <div className="flex items-center gap-4">
             <Link to="/terms" className="hover:text-gray-300 transition-colors">Terms</Link>
             <Link to="/shipping" className="hover:text-gray-300 transition-colors">Returns</Link>
             <Link to="/contact" className="hover:text-gray-300 transition-colors">Contact</Link>
+            <span className="text-gray-600">·</span>
+            <a href="https://www.weavixstudio.com" target="_blank" rel="noreferrer" className="hover:text-gray-300 transition-colors">
+              Made by Weavix Studio
+            </a>
           </div>
         </div>
       </div>
