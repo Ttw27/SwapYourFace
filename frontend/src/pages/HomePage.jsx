@@ -192,7 +192,7 @@ export default function HomePage() {
                       <img src={t.product_image_url || t.body_image_url} alt={t.name} className="w-full h-full object-contain p-4" crossOrigin="anonymous" />
                     </div>
                     <div className="p-4">
-                      <p className="font-bold text-[#252A34] mb-3 truncate">{t.name}</p>
+                      <p className="font-bold text-[#252A34] mb-3 truncate text-center">{t.name}</p>
                       <Link to={`/builder?template=${t.id}`}>
                         <Button className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-2.5 font-bold uppercase tracking-wider text-sm">
                           Use This Template
