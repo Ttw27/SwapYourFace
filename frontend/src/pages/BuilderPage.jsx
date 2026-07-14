@@ -898,7 +898,7 @@ export default function BuilderPage() {
                 </div>
                 <p className="font-bold text-white text-lg mb-1">Do It For Me</p>
                 <p className="text-gray-400 text-sm mb-3">Send us your photo — we'll handle everything</p>
-                <span className="text-xs text-[#FFE600] font-medium">Get in touch →</span>
+                <span className="text-xs text-[#FFE600] font-medium">Start Building →</span>
               </Link>
             </div>
           </div>

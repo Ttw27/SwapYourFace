@@ -29,6 +29,7 @@ const BLANK_TEMPLATE = {
   title_color: '#FFFFFF', title_outline: '#000000',
   subtitle_color: '#FFE600', subtitle_outline: '#000000',
   is_popular: false, is_new: false,
+  is_featured: false, featured_order: 0,
 };
 
 export default function AdminPage() {
@@ -387,6 +388,8 @@ export default function AdminPage() {
         },
         is_popular: templateForm.is_popular,
         is_new: templateForm.is_new,
+        is_featured: templateForm.is_featured,
+        featured_order: parseInt(templateForm.featured_order) || 0,
       };
       const r = await fetch(`${API}/templates`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       if (!r.ok) throw new Error('Failed to save');
@@ -405,6 +408,38 @@ export default function AdminPage() {
       toast.success('Template deleted');
       fetchTemplates(); fetchStats();
     } catch(e) { toast.error('Failed to delete template'); }
+  };
+
+  const handleToggleFeatured = async (t) => {
+    const featuredCount = templates.filter(x => x.is_featured).length;
+    if (!t.is_featured && featuredCount >= 10) {
+      toast.error('Already 10 featured templates — remove one first');
+      return;
+    }
+    try {
+      const nextFeatured = !t.is_featured;
+      await fetch(`${API}/admin/templates/${t.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          is_featured: nextFeatured,
+          featured_order: nextFeatured ? (featuredCount + 1) : 0,
+        })
+      });
+      toast.success(nextFeatured ? 'Added to homepage carousel' : 'Removed from homepage carousel');
+      fetchTemplates();
+    } catch(e) { toast.error('Failed to update template'); }
+  };
+
+  const handleSetFeaturedOrder = async (t, order) => {
+    try {
+      await fetch(`${API}/admin/templates/${t.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ featured_order: parseInt(order) || 0 })
+      });
+      fetchTemplates();
+    } catch(e) { toast.error('Failed to update order'); }
   };
 
   const filteredOrders = orders.filter(o => statusFilter === 'all' || o.status === statusFilter);
@@ -650,9 +685,16 @@ export default function AdminPage() {
                   </div>
                 </div>
 
-                <div className="flex gap-4">
+                <div className="flex flex-wrap items-center gap-4">
                   <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={templateForm.is_popular} onChange={e=>setF('is_popular',e.target.checked)} className="rounded"/><span className="text-sm text-gray-700">Mark as Popular</span></label>
                   <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={templateForm.is_new} onChange={e=>setF('is_new',e.target.checked)} className="rounded"/><span className="text-sm text-gray-700">Mark as New</span></label>
+                  <label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={templateForm.is_featured} onChange={e=>setF('is_featured',e.target.checked)} className="rounded"/><span className="text-sm text-gray-700">Featured on Homepage</span></label>
+                  {templateForm.is_featured && (
+                    <div className="flex items-center gap-2">
+                      <Label className="text-xs text-gray-500">Order</Label>
+                      <Input type="number" value={templateForm.featured_order} onChange={e=>setF('featured_order',e.target.value)} className="w-20 text-sm" min="1" max="10" />
+                    </div>
+                  )}
                 </div>
 
                 <div className="flex gap-3 pt-2">
@@ -667,9 +709,15 @@ export default function AdminPage() {
             {/* Templates grid */}
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
               {templates.map(t => (
-                <div key={t.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
-                  <div className="aspect-square bg-gray-50 overflow-hidden">
+                <div key={t.id} className={`bg-white rounded-2xl border shadow-sm overflow-hidden ${t.is_featured ? 'border-[#FFE600] ring-2 ring-[#FFE600]/40' : 'border-gray-100'}`}>
+                  <div className="aspect-square bg-gray-50 overflow-hidden relative">
                     <img src={t.product_image_url || t.body_image_url} alt={t.name} className="w-full h-full object-contain p-2" crossOrigin="anonymous"/>
+                    <button
+                      onClick={() => handleToggleFeatured(t)}
+                      title={t.is_featured ? 'Remove from homepage carousel' : 'Add to homepage carousel'}
+                      className={`absolute top-2 right-2 w-8 h-8 rounded-full flex items-center justify-center shadow-sm transition-colors ${t.is_featured ? 'bg-[#FFE600] text-[#252A34]' : 'bg-white/90 text-gray-400 hover:text-[#FFE600]'}`}>
+                      <Star className="w-4 h-4" fill={t.is_featured ? 'currentColor' : 'none'} />
+                    </button>
                   </div>
                   <div className="p-4">
                     <p className="font-bold text-[#252A34] truncate">{t.name}</p>
@@ -678,6 +726,12 @@ export default function AdminPage() {
                       {t.is_popular && <span className="text-xs bg-[#FF2E63]/10 text-[#FF2E63] px-1.5 py-0.5 rounded-full">Popular</span>}
                       {t.is_new && <span className="text-xs bg-[#08D9D6]/10 text-[#08D9D6] px-1.5 py-0.5 rounded-full">New</span>}
                     </div>
+                    {t.is_featured && (
+                      <div className="flex items-center gap-2 mt-2">
+                        <Label className="text-xs text-gray-500">Carousel order</Label>
+                        <Input type="number" defaultValue={t.featured_order} onBlur={e=>handleSetFeaturedOrder(t, e.target.value)} className="w-16 h-7 text-xs" min="1" max="10" />
+                      </div>
+                    )}
                     <p className="text-xs text-gray-400 mt-1.5 font-mono truncate">{t.id}</p>
                     <button onClick={() => handleDeleteTemplate(t.id)} className="mt-3 flex items-center gap-1 text-xs text-red-400 hover:text-red-600 transition-colors">
                       <Trash2 className="w-3 h-3"/> Delete

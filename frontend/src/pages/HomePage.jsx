@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { useStore } from '@/store/useStore';
-import { ArrowRight, Shirt, Users, Upload, Sparkles, Star, CheckCircle, MessageCircle, Palette } from 'lucide-react';
+import { ArrowRight, ChevronLeft, ChevronRight, Shirt, Users, Upload, Sparkles, Star, CheckCircle, MessageCircle, Palette } from 'lucide-react';
 import SEOHead from '@/components/SEOHead';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
@@ -13,6 +13,7 @@ export default function HomePage() {
   const { templates } = useStore();
   const [reviews, setReviews] = useState([]);
   const [pricingTiers, setPricingTiers] = useState([]);
+  const carouselRef = useRef(null);
 
   useEffect(() => {
     fetch(`${API}/reviews`)
@@ -24,6 +25,18 @@ export default function HomePage() {
       .then(data => setPricingTiers(data.tiers || []))
       .catch(() => {});
   }, []);
+
+  // Featured templates for homepage carousel — falls back to first 10 if none marked featured yet
+  const featuredTemplates = (() => {
+    const marked = templates.filter(t => t.is_featured).sort((a,b) => (a.featured_order||0) - (b.featured_order||0));
+    return (marked.length > 0 ? marked : templates).slice(0, 10);
+  })();
+
+  const scrollCarousel = (dir) => {
+    if (!carouselRef.current) return;
+    const cardWidth = carouselRef.current.querySelector('[data-card]')?.offsetWidth || 280;
+    carouselRef.current.scrollBy({ left: dir * (cardWidth + 24), behavior: 'smooth' });
+  };
 
   const features = [
     { icon: Upload, title: 'Upload Photo', desc: 'Upload any photo and we auto-remove the background' },
@@ -152,31 +165,45 @@ export default function HomePage() {
       </section>
 
       {/* Featured templates */}
-      {templates.length > 0 && (
+      {featuredTemplates.length > 0 && (
         <section className="py-16 bg-[#F7F7F7]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-12">
             <div className="text-center mb-10">
               <h2 className="font-['Anton'] text-3xl sm:text-4xl text-[#252A34] tracking-wide mb-3">POPULAR TEMPLATES</h2>
               <p className="text-gray-500">Choose your favourite or let us create something unique</p>
             </div>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {templates.slice(0,3).map((t,i) => (
-                <motion.div key={t.id} initial={{ opacity:0, y:20 }} whileInView={{ opacity:1, y:0 }} viewport={{ once:true }} transition={{ delay:i*0.1 }}
-                  className="bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
-                  <div className="aspect-square overflow-hidden bg-gray-50">
-                    <img src={t.product_image_url || t.body_image_url} alt={t.name} className="w-full h-full object-contain p-4" crossOrigin="anonymous" />
-                  </div>
-                  <div className="p-4">
-                    <p className="font-bold text-[#252A34] mb-3">{t.name}</p>
-                    <Link to={`/builder?template=${t.id}`}>
-                      <Button className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-2.5 font-bold uppercase tracking-wider text-sm">
-                        Use This Template
-                      </Button>
-                    </Link>
-                  </div>
-                </motion.div>
-              ))}
+
+            <div className="relative">
+              {/* Arrow buttons - desktop only */}
+              <button onClick={() => scrollCarousel(-1)} aria-label="Previous"
+                className="hidden md:flex absolute -left-5 top-1/2 -translate-y-1/2 z-10 w-10 h-10 rounded-full bg-white shadow-md items-center justify-center hover:bg-gray-50 transition-colors">
+                <ChevronLeft className="w-5 h-5 text-[#252A34]" />
+              </button>
+              <button onClick={() => scrollCarousel(1)} aria-label="Next"
+                className="hidden md:flex absolute -right-5 top-1/2 -translate-y-1/2 z-10 w-10 h-10 rounded-full bg-white shadow-md items-center justify-center hover:bg-gray-50 transition-colors">
+                <ChevronRight className="w-5 h-5 text-[#252A34]" />
+              </button>
+
+              <div ref={carouselRef} className="flex gap-6 overflow-x-auto pb-4 snap-x snap-mandatory scroll-smooth [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {featuredTemplates.map((t,i) => (
+                  <motion.div key={t.id} data-card initial={{ opacity:0, y:20 }} whileInView={{ opacity:1, y:0 }} viewport={{ once:true }} transition={{ delay:i*0.05 }}
+                    className="snap-start flex-shrink-0 w-[240px] sm:w-[260px] bg-white rounded-2xl overflow-hidden shadow-sm border border-gray-100 hover:shadow-md transition-shadow">
+                    <div className="aspect-square overflow-hidden bg-gray-50">
+                      <img src={t.product_image_url || t.body_image_url} alt={t.name} className="w-full h-full object-contain p-4" crossOrigin="anonymous" />
+                    </div>
+                    <div className="p-4">
+                      <p className="font-bold text-[#252A34] mb-3 truncate">{t.name}</p>
+                      <Link to={`/builder?template=${t.id}`}>
+                        <Button className="w-full bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full py-2.5 font-bold uppercase tracking-wider text-sm">
+                          Use This Template
+                        </Button>
+                      </Link>
+                    </div>
+                  </motion.div>
+                ))}
+              </div>
             </div>
+
             <div className="text-center mt-8">
               <Link to="/gallery">
                 <Button variant="outline" className="rounded-full px-8 py-3 font-bold uppercase tracking-wider border-[#252A34] text-[#252A34] hover:bg-[#252A34] hover:text-white">
