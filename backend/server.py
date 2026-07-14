@@ -120,6 +120,8 @@ class Template(BaseModel):
     })
     is_popular: bool = False
     is_new: bool = True
+    is_featured: bool = False
+    featured_order: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class TemplateCreate(BaseModel):
@@ -132,6 +134,8 @@ class TemplateCreate(BaseModel):
     text_fields: Optional[Dict[str, Any]] = None
     is_popular: Optional[bool] = False
     is_new: Optional[bool] = True
+    is_featured: Optional[bool] = False
+    featured_order: Optional[int] = 0
 
 class HeadCutout(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -192,15 +196,17 @@ async def root():
     return {"message": "PartyTees API is running", "version": "2.0.0"}
 
 @api_router.get("/templates")
-async def get_templates(category: Optional[str] = None, popular: Optional[bool] = None):
+async def get_templates(category: Optional[str] = None, popular: Optional[bool] = None, featured: Optional[bool] = None):
     query = {}
     if category:
         # Match against the new categories list
         query["categories"] = {"$in": [category.lower()]}
     if popular is not None:
         query["is_popular"] = popular
+    if featured is not None:
+        query["is_featured"] = featured
     
-    templates = await db.templates.find(query, {"_id": 0}).to_list(100)
+    templates = await db.templates.find(query, {"_id": 0}).sort("featured_order", 1).to_list(100)
     return templates
 
 @api_router.get("/templates/{template_id}")
@@ -228,7 +234,9 @@ async def create_template(template: TemplateCreate):
             "subtitle": {"font": "Anton", "size": 32, "color": "#FFFFFF", "outline": "#000000"}
         },
         is_popular=template.is_popular,
-        is_new=template.is_new
+        is_new=template.is_new,
+        is_featured=template.is_featured,
+        featured_order=template.featured_order
     )
     
     doc = template_obj.model_dump()
@@ -1096,7 +1104,7 @@ async def send_facebook_purchase_event(order: dict):
 async def update_template(template_id: str, data: dict):
     """Update a template by ID"""
     allowed = {"name", "body_image_url", "product_image_url", "categories", "active", 
-               "is_popular", "is_new", "head_placement", "text_fields"}
+               "is_popular", "is_new", "is_featured", "featured_order", "head_placement", "text_fields"}
     clean = {k: v for k, v in data.items() if k in allowed}
     if not clean:
         raise HTTPException(status_code=400, detail="No valid fields")
