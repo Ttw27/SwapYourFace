@@ -1189,11 +1189,13 @@ async def generate_design(data: DesignGenerateRequest):
         resp = requests.post(
             "https://api.ideogram.ai/v1/ideogram-v3/generate-transparent",
             headers={"Api-Key": IDEOGRAM_API_KEY},
-            data={
-                "prompt": data.prompt,
-                "rendering_speed": "DEFAULT",
-                "num_images": str(num_images),
-                "magic_prompt": "OFF",
+            # Ideogram requires multipart/form-data — passing `files` with (None, value)
+            # forces requests to multipart-encode plain text fields (no `data=` here).
+            files={
+                "prompt": (None, data.prompt),
+                "rendering_speed": (None, "DEFAULT"),
+                "num_images": (None, str(num_images)),
+                "magic_prompt": (None, "OFF"),
             },
             timeout=90,
         )
