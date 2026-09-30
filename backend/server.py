@@ -52,6 +52,10 @@ R2_SECRET_KEY  = os.environ.get('R2_SECRET_KEY', '')
 R2_BUCKET      = os.environ.get('R2_BUCKET', 'swapmyface')
 R2_PUBLIC_URL  = os.environ.get('R2_PUBLIC_URL', 'https://pub-ac6681582ccc439ca43cef357512c6bc.r2.dev')
 
+# ── AI Design Generator config ────────────────────────────────────────────────
+IDEOGRAM_API_KEY = os.environ.get('IDEOGRAM_API_KEY', '')
+ANTHROPIC_API_KEY = os.environ.get('ANTHROPIC_API_KEY', '')
+
 def get_r2_client():
     from botocore.config import Config as BotoConfig
     return boto3.client(
@@ -136,6 +140,20 @@ class TemplateCreate(BaseModel):
     is_new: Optional[bool] = True
     is_featured: Optional[bool] = False
     featured_order: Optional[int] = 0
+
+class PromptExpandRequest(BaseModel):
+    prompt: str
+
+class DesignGenerateRequest(BaseModel):
+    prompt: str
+    num_images: Optional[int] = 4
+
+class DesignPublishRequest(BaseModel):
+    generation_id: Optional[str] = None
+    image_url: str
+    name: str
+    categories: List[str] = ["stag"]
+    is_featured: Optional[bool] = False
 
 class HeadCutout(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1110,6 +1128,171 @@ async def update_template(template_id: str, data: dict):
         raise HTTPException(status_code=400, detail="No valid fields")
     await db.templates.update_one({"id": template_id}, {"$set": clean})
     return {"message": "Updated"}
+
+# ============ AI DESIGN GENERATOR ============
+
+@api_router.post("/admin/design-generator/expand-prompt")
+async def expand_design_prompt(data: PromptExpandRequest):
+    """Use Claude to expand a short admin idea into a detailed Ideogram image prompt."""
+    if not ANTHROPIC_API_KEY:
+        raise HTTPException(status_code=500, detail="ANTHROPIC_API_KEY not configured")
+
+    system_prompt = (
+        "You write image-generation prompts for a custom party t-shirt design tool. "
+        "The admin gives you a short idea (e.g. 'A Nurse', 'Darth Vader'). Expand it into a single, "
+        "detailed prompt for generating a full-body character illustration to be printed on a t-shirt. "
+        "The design must NOT include a head or face — the customer's own photo gets composited on top "
+        "afterwards — so describe the body, costume, pose and props only, framed from the neck down or "
+        "with the head clearly cropped out of shot. Style: bold, flat-colour, high-contrast illustrated "
+        "artwork like a sticker or screen-print design — fun and party-appropriate, NOT photorealistic, "
+        "NOT generic stock-art. Always specify: transparent background, no text, no watermark, no logos, "
+        "single centered subject, clean bold linework. Reply with ONLY the final prompt text and nothing else — "
+        "no preamble, no quotation marks."
+    )
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
+                "max_tokens": 400,
+                "system": system_prompt,
+                "messages": [{"role": "user", "content": data.prompt}],
+            },
+            timeout=30,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        expanded = "".join(block.get("text", "") for block in result.get("content", [])).strip()
+        if not expanded:
+            raise ValueError("Empty response from Claude")
+        return {"original_prompt": data.prompt, "expanded_prompt": expanded}
+    except Exception as e:
+        logger.error(f"Claude prompt expansion failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Prompt expansion failed: {e}")
+
+
+@api_router.post("/admin/design-generator/generate")
+async def generate_design(data: DesignGenerateRequest):
+    """Send the (expanded) prompt to Ideogram and return generated transparent-background image options."""
+    if not IDEOGRAM_API_KEY:
+        raise HTTPException(status_code=500, detail="IDEOGRAM_API_KEY not configured")
+
+    num_images = max(1, min(8, data.num_images or 4))
+
+    try:
+        resp = requests.post(
+            "https://api.ideogram.ai/v1/ideogram-v3/generate-transparent",
+            headers={"Api-Key": IDEOGRAM_API_KEY},
+            data={
+                "prompt": data.prompt,
+                "rendering_speed": "DEFAULT",
+                "num_images": str(num_images),
+                "magic_prompt": "OFF",
+            },
+            timeout=90,
+        )
+        if resp.status_code != 200:
+            logger.error(f"Ideogram API error {resp.status_code}: {resp.text}")
+            raise HTTPException(status_code=502, detail=f"Ideogram API error: {resp.text[:300]}")
+        result = resp.json()
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Ideogram request failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Ideogram request failed: {e}")
+
+    generation_id = str(uuid.uuid4())
+    saved_images = []
+    for i, item in enumerate(result.get("data", [])):
+        img_url = item.get("url")
+        if not img_url:
+            continue
+        try:
+            img_resp = requests.get(img_url, timeout=60)
+            img_resp.raise_for_status()
+            r2_key = f"generated/{generation_id}_{i}.png"
+            final_url = upload_to_r2(img_resp.content, r2_key, "image/png")
+            if not final_url:
+                local_path = PRINTS_DIR / f"{generation_id}_{i}.png"
+                with open(local_path, "wb") as f:
+                    f.write(img_resp.content)
+                final_url = f"/api/files/prints/{generation_id}_{i}.png"
+            saved_images.append(final_url)
+        except Exception as e:
+            logger.error(f"Failed to save generated image {i}: {e}")
+
+    if not saved_images:
+        raise HTTPException(status_code=500, detail="No images were generated — Ideogram returned no usable results")
+
+    doc = {
+        "id": generation_id,
+        "prompt": data.prompt,
+        "images": saved_images,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.design_generations.insert_one(doc)
+
+    return {"generation_id": generation_id, "images": saved_images}
+
+
+@api_router.post("/admin/design-generator/upload-final")
+async def upload_final_design(file: UploadFile = File(...)):
+    """Upload the admin's cleaned-up / resized final design PNG (after eraser + canvas edits) to R2."""
+    contents = await file.read()
+    try:
+        img = Image.open(io.BytesIO(contents))
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+
+    final_id = str(uuid.uuid4())
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    buf.seek(0)
+    r2_key = f"generated/final_{final_id}.png"
+    final_url = upload_to_r2(buf.getvalue(), r2_key, "image/png")
+    if not final_url:
+        local_path = PRINTS_DIR / f"final_{final_id}.png"
+        img.save(local_path, "PNG")
+        final_url = f"/api/files/prints/final_{final_id}.png"
+
+    return {"url": final_url}
+
+
+@api_router.post("/admin/design-generator/publish")
+async def publish_generated_design(data: DesignPublishRequest):
+    """Publish a chosen/edited AI-generated image live as a real Template on the site."""
+    template_create = TemplateCreate(
+        name=data.name,
+        categories=data.categories or ["stag"],
+        body_image_url=data.image_url,
+        product_image_url=data.image_url,
+        is_new=True,
+        is_featured=data.is_featured or False,
+    )
+    template_obj = await create_template(template_create)
+
+    if data.generation_id:
+        await db.design_generations.update_one(
+            {"id": data.generation_id},
+            {"$set": {"published_template_id": template_obj.id, "published_image_url": data.image_url}}
+        )
+
+    return template_obj
+
+
+@api_router.get("/admin/design-generator/generations")
+async def list_design_generations():
+    """List recent AI design generations (drafts + published)."""
+    generations = await db.design_generations.find({}, {"_id": 0}).sort("created_at", -1).to_list(50)
+    return generations
 
 @api_router.post("/admin/templates/fix-all-cloudinary")
 async def fix_all_cloudinary_urls():
