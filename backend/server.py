@@ -1159,21 +1159,29 @@ async def expand_design_prompt(data: PromptExpandRequest):
                 "content-type": "application/json",
             },
             json={
-                "model": os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
+                "model": os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022"),
                 "max_tokens": 400,
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": data.prompt}],
             },
             timeout=30,
         )
-        resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"Claude request failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Prompt expansion failed: {e}")
+
+    if resp.status_code != 200:
+        logger.error(f"Claude API error {resp.status_code}: {resp.text}")
+        raise HTTPException(status_code=502, detail=f"Claude API error ({resp.status_code}): {resp.text[:400]}")
+
+    try:
         result = resp.json()
         expanded = "".join(block.get("text", "") for block in result.get("content", [])).strip()
         if not expanded:
             raise ValueError("Empty response from Claude")
         return {"original_prompt": data.prompt, "expanded_prompt": expanded}
     except Exception as e:
-        logger.error(f"Claude prompt expansion failed: {e}")
+        logger.error(f"Claude response parsing failed: {e}")
         raise HTTPException(status_code=500, detail=f"Prompt expansion failed: {e}")
 
 
