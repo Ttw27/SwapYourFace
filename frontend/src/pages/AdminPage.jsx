@@ -4,12 +4,13 @@ import { toast } from 'sonner';
 import {
   ShoppingBag, Download, RefreshCw, LogOut,
   CheckCircle, Clock, Truck, Package, Eye, X,
-  Plus, Shirt, Trash2, Edit2, Star, Upload, CreditCard, Sparkles, Copy, ExternalLink
+  Plus, Shirt, Trash2, Edit2, Star, Upload, CreditCard, Sparkles, Copy, ExternalLink, Wand2
 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import AIDesignGenerator from '@/components/AIDesignGenerator';
 
 const API = `${process.env.REACT_APP_BACKEND_URL}/api`;
 const ADMIN_PASSWORD = process.env.REACT_APP_ADMIN_PASSWORD || 'swapAdmin2025';
@@ -507,7 +508,7 @@ export default function AdminPage() {
 
         {/* Tabs */}
         <div className="flex gap-2 border-b border-gray-200">
-          {[{id:'orders',label:'Orders',icon:ShoppingBag},{id:'templates',label:'Templates',icon:Shirt},{id:'reviews',label:'Reviews',icon:Star},{id:'settings',label:'Settings',icon:Edit2},{id:'payment-links',label:'Payment Links',icon:CreditCard},{id:'builder',label:'Builder',icon:Sparkles}].map(tab => (
+          {[{id:'orders',label:'Orders',icon:ShoppingBag},{id:'templates',label:'Templates',icon:Shirt},{id:'reviews',label:'Reviews',icon:Star},{id:'settings',label:'Settings',icon:Edit2},{id:'payment-links',label:'Payment Links',icon:CreditCard},{id:'builder',label:'Builder',icon:Sparkles},{id:'ai-designer',label:'AI Designer',icon:Wand2}].map(tab => (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)}
               className={`flex items-center gap-2 px-5 py-3 font-medium text-sm border-b-2 transition-colors ${activeTab===tab.id?'border-[#FF2E63] text-[#FF2E63]':'border-transparent text-gray-500 hover:text-gray-700'}`}>
               <tab.icon className="w-4 h-4" />{tab.label}
@@ -1224,6 +1225,8 @@ export default function AdminPage() {
             </div>
           </div>
         )}
+
+        {activeTab === 'ai-designer' && <AIDesignGenerator />}
       </div>
 
       {/* Order Detail Modal */}
