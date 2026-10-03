@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Star, Upload, X, ZoomIn, ChevronLeft, ChevronRight } from 'lucide-react';
 import SEOHead from '@/components/SEOHead';
@@ -26,56 +26,126 @@ const StarRating = ({ rating, size = 'sm', interactive = false, onChange }) => {
   );
 };
 
-// ─── Lightbox ─────────────────────────────────────────────────────────────────
-const Lightbox = ({ src, alt, onClose }) => (
-  <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.9)' }}
-    onClick={onClose}>
-    <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors">
-      <X className="w-6 h-6" />
-    </button>
-    <img src={src} alt={alt} className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl"
-      onClick={e => e.stopPropagation()} crossOrigin="anonymous" />
-  </div>
-);
+// Pulls the full set of photos off a review, old single-photo reviews included.
+const getReviewPhotos = (review) => {
+  if (Array.isArray(review.photo_urls) && review.photo_urls.length > 0) return review.photo_urls;
+  if (review.photo_url) return [review.photo_url];
+  return [];
+};
+
+// ─── Swipeable image strip (shared by card + lightbox) ─────────────────────────
+const SwipeGallery = ({ images, index, onIndexChange, children }) => {
+  const touchStartX = useRef(null);
+
+  const goTo = (i) => onIndexChange(((i % images.length) + images.length) % images.length);
+  const prev = (e) => { e?.stopPropagation(); goTo(index - 1); };
+  const next = (e) => { e?.stopPropagation(); goTo(index + 1); };
+
+  const handleTouchStart = (e) => { touchStartX.current = e.touches[0].clientX; };
+  const handleTouchEnd = (e) => {
+    if (touchStartX.current === null) return;
+    const delta = e.changedTouches[0].clientX - touchStartX.current;
+    if (Math.abs(delta) > 40) delta > 0 ? prev() : next();
+    touchStartX.current = null;
+  };
+
+  return (
+    <div className="relative" onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
+      {children}
+      {images.length > 1 && (
+        <>
+          <button onClick={prev} aria-label="Previous photo"
+            className="absolute left-2 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 text-white rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <ChevronLeft className="w-4 h-4" />
+          </button>
+          <button onClick={next} aria-label="Next photo"
+            className="absolute right-2 top-1/2 -translate-y-1/2 bg-black/40 hover:bg-black/60 text-white rounded-full p-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
+            <ChevronRight className="w-4 h-4" />
+          </button>
+          <div className="absolute bottom-2 left-1/2 -translate-x-1/2 flex gap-1.5">
+            {images.map((_, i) => (
+              <button key={i} onClick={(e) => { e.stopPropagation(); goTo(i); }}
+                className={`w-1.5 h-1.5 rounded-full transition-colors ${i === index ? 'bg-white' : 'bg-white/40'}`} />
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ─── Lightbox (swipeable across every photo on the review) ─────────────────────
+const Lightbox = ({ images, alt, startIndex = 0, onClose }) => {
+  const [index, setIndex] = useState(startIndex);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(0,0,0,0.9)' }}
+      onClick={onClose}>
+      <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full bg-white/10 hover:bg-white/20 text-white transition-colors z-10">
+        <X className="w-6 h-6" />
+      </button>
+      <div className="group max-w-full max-h-[90vh]" onClick={e => e.stopPropagation()}>
+        <SwipeGallery images={images} index={index} onIndexChange={setIndex}>
+          <img src={images[index]} alt={alt} className="max-w-full max-h-[90vh] object-contain rounded-xl shadow-2xl"
+            crossOrigin="anonymous" />
+        </SwipeGallery>
+      </div>
+    </div>
+  );
+};
 
 // ─── Review Card ──────────────────────────────────────────────────────────────
-const ReviewCard = ({ review, delay = 0, onImageClick }) => (
-  <motion.div initial={{ opacity:0, y:20 }} whileInView={{ opacity:1, y:0 }} viewport={{ once:true }} transition={{ delay }}
-    className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
-    {review.photo_url && (
-      <div className="relative cursor-pointer group" onClick={() => onImageClick(review.photo_url, review.name)}>
-        <img src={review.photo_url} alt={`${review.name}'s order`}
-          className="w-full aspect-square object-cover transition-transform duration-300 group-hover:scale-105"
-          crossOrigin="anonymous" />
-        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center">
-          <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-2">
-            <ZoomIn className="w-5 h-5 text-[#252A34]" />
+const ReviewCard = ({ review, delay = 0, onImageClick }) => {
+  const photos = getReviewPhotos(review);
+  const [index, setIndex] = useState(0);
+
+  return (
+    <motion.div initial={{ opacity:0, y:20 }} whileInView={{ opacity:1, y:0 }} viewport={{ once:true }} transition={{ delay }}
+      className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden flex flex-col">
+      {photos.length > 0 && (
+        <div className="group relative cursor-pointer" onClick={() => onImageClick(photos, review.name, index)}>
+          <SwipeGallery images={photos} index={index} onIndexChange={setIndex}>
+            <img src={photos[index]} alt={`${review.name}'s order`}
+              className="w-full aspect-square object-cover"
+              crossOrigin="anonymous" />
+            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors flex items-center justify-center pointer-events-none">
+              <div className="opacity-0 group-hover:opacity-100 transition-opacity bg-white/90 rounded-full p-2">
+                <ZoomIn className="w-5 h-5 text-[#252A34]" />
+              </div>
+            </div>
+          </SwipeGallery>
+        </div>
+      )}
+      <div className="p-5 flex flex-col flex-1">
+        <div className="flex items-start justify-between mb-2">
+          <div>
+            <p className="font-bold text-[#252A34]">{review.name}</p>
+            <p className="text-xs text-gray-400">{review.location}{review.event ? ` · ${review.event}` : ''}</p>
           </div>
+          {review.verified && (
+            <span className="text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full font-medium border border-green-200 flex-shrink-0">✓ Verified</span>
+          )}
         </div>
+        <StarRating rating={review.rating} />
+        <p className="text-gray-600 text-sm mt-3 flex-1 leading-relaxed">"{review.text}"</p>
       </div>
-    )}
-    <div className="p-5 flex flex-col flex-1">
-      <div className="flex items-start justify-between mb-2">
-        <div>
-          <p className="font-bold text-[#252A34]">{review.name}</p>
-          <p className="text-xs text-gray-400">{review.location}{review.event ? ` · ${review.event}` : ''}</p>
-        </div>
-        {review.verified && (
-          <span className="text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full font-medium border border-green-200 flex-shrink-0">✓ Verified</span>
-        )}
-      </div>
-      <StarRating rating={review.rating} />
-      <p className="text-gray-600 text-sm mt-3 flex-1 leading-relaxed">"{review.text}"</p>
-    </div>
-  </motion.div>
-);
+    </motion.div>
+  );
+};
 
 // ─── Submit Form ──────────────────────────────────────────────────────────────
+const MAX_REVIEW_PHOTOS = 5;
+
 const SubmitReviewForm = ({ onClose, onSubmitted }) => {
   const [form, setForm] = useState({ name:'', location:'', event:'', rating:5, text:'' });
-  const [photo, setPhoto] = useState(null);
+  const [photos, setPhotos] = useState([]);
   const [submitting, setSubmitting] = useState(false);
   const setF = (k, v) => setForm(f => ({ ...f, [k]: v }));
+
+  const addPhotos = (files) => {
+    const next = [...photos, ...Array.from(files || [])].slice(0, MAX_REVIEW_PHOTOS);
+    setPhotos(next);
+  };
+  const removePhoto = (i) => setPhotos(ps => ps.filter((_, idx) => idx !== i));
 
   const handleSubmit = async () => {
     if (!form.name.trim() || !form.text.trim()) { toast.error('Please fill in your name and review'); return; }
@@ -83,7 +153,7 @@ const SubmitReviewForm = ({ onClose, onSubmitted }) => {
     try {
       const fd = new FormData();
       Object.entries(form).forEach(([k,v]) => fd.append(k, String(v)));
-      if (photo) fd.append('photo', photo);
+      photos.forEach(p => fd.append('photos', p));
       const res = await fetch(`${API}/reviews`, { method:'POST', body:fd });
       if (!res.ok) throw new Error('Submit failed');
       toast.success('Thanks for your review! It will appear once approved.');
@@ -94,6 +164,11 @@ const SubmitReviewForm = ({ onClose, onSubmitted }) => {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleFileChange = (e) => {
+    addPhotos(e.target.files);
+    e.target.value = ''; // allow picking the same file again after removing it
   };
 
   return (
@@ -117,17 +192,22 @@ const SubmitReviewForm = ({ onClose, onSubmitted }) => {
           <div><Label className="mb-2 block">Rating</Label><StarRating rating={form.rating} size="lg" interactive onChange={v=>setF('rating',v)}/></div>
           <div><Label>Your Review</Label><Textarea value={form.text} onChange={e=>setF('text',e.target.value)} placeholder="Tell us about your experience..." rows={4} className="mt-1"/></div>
           <div>
-            <Label className="mb-1 block">Photo (optional — great for showing off your shirts!)</Label>
-            {photo ? (
-              <div className="relative rounded-xl overflow-hidden">
-                <img src={URL.createObjectURL(photo)} alt="preview" className="w-full aspect-video object-cover"/>
-                <button onClick={()=>setPhoto(null)} className="absolute top-2 right-2 p-1.5 bg-red-500 text-white rounded-full"><X className="w-4 h-4"/></button>
+            <Label className="mb-1 block">Photos (optional — great for showing off your shirts! up to {MAX_REVIEW_PHOTOS})</Label>
+            {photos.length > 0 && (
+              <div className="grid grid-cols-3 gap-2 mb-2">
+                {photos.map((p, i) => (
+                  <div key={i} className="relative rounded-xl overflow-hidden aspect-square">
+                    <img src={URL.createObjectURL(p)} alt={`preview ${i+1}`} className="w-full h-full object-cover"/>
+                    <button onClick={()=>removePhoto(i)} className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full"><X className="w-3 h-3"/></button>
+                  </div>
+                ))}
               </div>
-            ) : (
+            )}
+            {photos.length < MAX_REVIEW_PHOTOS && (
               <label className="flex flex-col items-center gap-2 p-6 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-[#FF2E63] transition-colors">
                 <Upload className="w-6 h-6 text-gray-400"/>
-                <span className="text-sm text-gray-500 text-center">Upload a photo of your group in the shirts</span>
-                <input type="file" accept="image/*" className="hidden" onChange={e=>setPhoto(e.target.files?.[0]||null)}/>
+                <span className="text-sm text-gray-500 text-center">Upload photo(s) of your group in the shirts</span>
+                <input type="file" accept="image/*" multiple className="hidden" onChange={handleFileChange}/>
               </label>
             )}
           </div>
@@ -147,7 +227,7 @@ export default function ReviewsPage() {
   const [showForm, setShowForm] = useState(false);
   const [activeFilter, setActiveFilter] = useState('all');
   const [page, setPage] = useState(1);
-  const [lightbox, setLightbox] = useState(null); // { src, alt }
+  const [lightbox, setLightbox] = useState(null); // { images, alt, startIndex }
 
   const fetchReviews = async () => {
     try {
@@ -176,7 +256,7 @@ export default function ReviewsPage() {
         keywords="custom t-shirt reviews UK, stag do t-shirt reviews, hen party t-shirt reviews"
         url="/reviews"
       />
-      {lightbox && <Lightbox src={lightbox.src} alt={lightbox.alt} onClose={() => setLightbox(null)} />}
+      {lightbox && <Lightbox images={lightbox.images} alt={lightbox.alt} startIndex={lightbox.startIndex} onClose={() => setLightbox(null)} />}
       {showForm && <SubmitReviewForm onClose={()=>setShowForm(false)} onSubmitted={fetchReviews}/>}
 
       {/* Hero */}
@@ -225,7 +305,7 @@ export default function ReviewsPage() {
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
               {paginated.map((review, i) => (
                 <ReviewCard key={review._id || review.id} review={review} delay={i * 0.05}
-                  onImageClick={(src, alt) => setLightbox({ src, alt })} />
+                  onImageClick={(images, alt, startIndex) => setLightbox({ images, alt, startIndex })} />
               ))}
             </div>
 

@@ -116,7 +116,8 @@ export default function AdminPage() {
     }
   };
   const [reviewForm, setReviewForm] = useState({ name:'', location:'', event:'', rating:5, text:'', verified:true });
-  const [reviewPhoto, setReviewPhoto] = useState(null);
+  const [reviewPhotos, setReviewPhotos] = useState([]);
+  const MAX_REVIEW_PHOTOS = 5;
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
@@ -166,7 +167,7 @@ export default function AdminPage() {
       fd.append('location', reviewForm.location || '');
       fd.append('event', reviewForm.event || '');
       fd.append('verified', reviewForm.verified ? 'true' : 'false');
-      if (reviewPhoto) fd.append('photo', reviewPhoto);
+      reviewPhotos.forEach(p => fd.append('photos', p));
 
       const url = editingReview
         ? `${API}/admin/reviews/${editingReview.id}/update`
@@ -181,7 +182,7 @@ export default function AdminPage() {
       setShowReviewForm(false);
       setEditingReview(null);
       setReviewForm({ name:'', location:'', event:'', rating:5, text:'', verified:true });
-      setReviewPhoto(null);
+      setReviewPhotos([]);
       fetchReviews();
     } catch(e) {
       console.error('Save review error:', e);
@@ -750,7 +751,7 @@ export default function AdminPage() {
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="font-['Anton'] text-lg text-[#252A34'] tracking-wide">REVIEWS ({reviews.length})</h2>
-              <Button onClick={() => { setEditingReview(null); setReviewForm({ name:'', location:'', event:'', rating:5, text:'', verified:true }); setReviewPhoto(null); setShowReviewForm(true); }}
+              <Button onClick={() => { setEditingReview(null); setReviewForm({ name:'', location:'', event:'', rating:5, text:'', verified:true }); setReviewPhotos([]); setShowReviewForm(true); }}
                 className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full gap-2">
                 <Plus className="w-4 h-4" /> Add Review
               </Button>
@@ -786,18 +787,28 @@ export default function AdminPage() {
                 </div>
                 <div><Label>Review Text</Label><Textarea value={reviewForm.text} onChange={e=>setReviewForm(f=>({...f,text:e.target.value}))} placeholder="Customer review..." rows={3} className="mt-1"/></div>
                 <div>
-                  <Label className="mb-1 block">Photo (optional)</Label>
-                  {reviewPhoto ? (
-                    <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg">
-                      <img src={URL.createObjectURL(reviewPhoto)} alt="preview" className="w-12 h-12 rounded-lg object-cover"/>
-                      <p className="text-sm text-gray-600 flex-1 truncate">{reviewPhoto.name}</p>
-                      <button onClick={()=>setReviewPhoto(null)} className="text-red-400"><X className="w-4 h-4"/></button>
+                  <Label className="mb-1 block">Photos (optional, up to {MAX_REVIEW_PHOTOS})</Label>
+                  {editingReview && (editingReview.photo_urls?.length || editingReview.photo_url) && reviewPhotos.length === 0 && (
+                    <p className="text-xs text-gray-400 mb-2">
+                      This review already has {editingReview.photo_urls?.length || 1} photo(s). Uploading new ones below will replace them all.
+                    </p>
+                  )}
+                  {reviewPhotos.length > 0 && (
+                    <div className="grid grid-cols-4 gap-2 mb-2">
+                      {reviewPhotos.map((p, i) => (
+                        <div key={i} className="relative rounded-lg overflow-hidden aspect-square">
+                          <img src={URL.createObjectURL(p)} alt={`preview ${i+1}`} className="w-full h-full object-cover"/>
+                          <button onClick={()=>setReviewPhotos(ps=>ps.filter((_,idx)=>idx!==i))} className="absolute top-1 right-1 p-0.5 bg-red-500 text-white rounded-full"><X className="w-3 h-3"/></button>
+                        </div>
+                      ))}
                     </div>
-                  ) : (
+                  )}
+                  {reviewPhotos.length < MAX_REVIEW_PHOTOS && (
                     <label className="flex items-center gap-3 p-3 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-[#FF2E63]">
                       <Upload className="w-4 h-4 text-gray-400"/>
-                      <span className="text-sm text-gray-500">Upload customer photo</span>
-                      <input type="file" accept="image/*" className="hidden" onChange={e=>setReviewPhoto(e.target.files?.[0]||null)}/>
+                      <span className="text-sm text-gray-500">Upload customer photo(s)</span>
+                      <input type="file" accept="image/*" multiple className="hidden"
+                        onChange={e=>{ setReviewPhotos(ps=>[...ps, ...Array.from(e.target.files||[])].slice(0,MAX_REVIEW_PHOTOS)); e.target.value=''; }}/>
                     </label>
                   )}
                 </div>
@@ -820,7 +831,16 @@ export default function AdminPage() {
                 <div key={review.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm p-5">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex items-start gap-3 flex-1 min-w-0">
-                      {review.photo_url && <img src={review.photo_url} alt={review.name} className="w-10 h-10 rounded-full object-cover flex-shrink-0" crossOrigin="anonymous"/>}
+                      {review.photo_url && (
+                        <div className="relative flex-shrink-0">
+                          <img src={review.photo_url} alt={review.name} className="w-10 h-10 rounded-full object-cover" crossOrigin="anonymous"/>
+                          {review.photo_urls?.length > 1 && (
+                            <span className="absolute -bottom-1 -right-1 bg-[#252A34] text-white text-[9px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
+                              {review.photo_urls.length}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
                           <p className="font-bold text-[#252A34]">{review.name}</p>
@@ -839,7 +859,7 @@ export default function AdminPage() {
                         className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${review.approved ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                         {review.approved ? 'Live' : 'Hidden'}
                       </button>
-                      <button onClick={() => { setEditingReview(review); setReviewForm({ name:review.name, location:review.location||'', event:review.event||'', rating:review.rating, text:review.text, verified:review.verified||false }); setShowReviewForm(true); }}
+                      <button onClick={() => { setEditingReview(review); setReviewForm({ name:review.name, location:review.location||'', event:review.event||'', rating:review.rating, text:review.text, verified:review.verified||false }); setReviewPhotos([]); setShowReviewForm(true); }}
                         className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><Edit2 className="w-4 h-4"/></button>
                       <button onClick={() => handleDeleteReview(review.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400"><Trash2 className="w-4 h-4"/></button>
                     </div>
