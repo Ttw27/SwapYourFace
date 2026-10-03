@@ -1131,6 +1131,8 @@ async def update_template(template_id: str, data: dict):
 
 # ============ AI DESIGN GENERATOR ============
 
+_claude_model_cache = None  # auto-discovered model id if the default is unavailable
+
 @api_router.post("/admin/design-generator/expand-prompt")
 async def expand_design_prompt(data: PromptExpandRequest):
     """Use Claude to expand a short admin idea into a detailed Ideogram image prompt."""
@@ -1150,22 +1152,42 @@ async def expand_design_prompt(data: PromptExpandRequest):
         "no preamble, no quotation marks."
     )
 
-    try:
-        resp = requests.post(
+    headers = {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+
+    def call_claude(model_name):
+        return requests.post(
             "https://api.anthropic.com/v1/messages",
-            headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            },
+            headers=headers,
             json={
-                "model": os.environ.get("ANTHROPIC_MODEL", "claude-3-5-haiku-20241022"),
+                "model": model_name,
                 "max_tokens": 400,
                 "system": system_prompt,
                 "messages": [{"role": "user", "content": data.prompt}],
             },
             timeout=30,
         )
+
+    try:
+        global _claude_model_cache
+        model_name = _claude_model_cache or os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5")
+        resp = call_claude(model_name)
+
+        # Model retired / not available on this key -> ask Anthropic which models
+        # this key CAN use, pick the best cheap one, remember it, and retry once.
+        if resp.status_code == 404 and "model" in resp.text:
+            logger.warning(f"Claude model '{model_name}' unavailable, discovering available models")
+            models_resp = requests.get("https://api.anthropic.com/v1/models", headers=headers, timeout=15)
+            if models_resp.status_code == 200:
+                ids = [m.get("id", "") for m in models_resp.json().get("data", [])]
+                preferred = ([i for i in ids if "haiku" in i] or [i for i in ids if "sonnet" in i] or ids)
+                if preferred:
+                    _claude_model_cache = preferred[0]
+                    logger.info(f"Using Claude model: {_claude_model_cache}")
+                    resp = call_claude(_claude_model_cache)
     except Exception as e:
         logger.error(f"Claude request failed: {e}")
         raise HTTPException(status_code=500, detail=f"Prompt expansion failed: {e}")
@@ -1749,9 +1771,10 @@ async def update_review_with_photo(
     location: str = Form(''),
     event: str = Form(''),
     verified: str = Form('true'),
+    keep_photo_urls: str = Form(None),
     photos: List[UploadFile] = File(default=[])
 ):
-    photo_urls = await _upload_review_photos(photos)
+    new_urls = await _upload_review_photos(photos)
 
     updates = {
         "name": name, "text": text,
@@ -1759,10 +1782,23 @@ async def update_review_with_photo(
         "location": location, "event": event,
         "verified": verified.lower() == 'true',
     }
-    if photo_urls:
-        # New photos uploaded — they replace the review's existing photo set entirely.
-        updates["photo_url"] = photo_urls[0]
-        updates["photo_urls"] = photo_urls
+
+    # keep_photo_urls = JSON list of the existing photos the admin chose to keep.
+    # If it isn't sent at all (older frontend), existing photos are left untouched.
+    if keep_photo_urls is not None:
+        try:
+            kept = [u for u in json.loads(keep_photo_urls) if isinstance(u, str) and u]
+        except Exception:
+            kept = []
+        final_urls = kept + new_urls
+        updates["photo_urls"] = final_urls
+        updates["photo_url"] = final_urls[0] if final_urls else None
+    elif new_urls:
+        existing = await db.reviews.find_one({"id": review_id}, {"_id": 0, "photo_urls": 1, "photo_url": 1}) or {}
+        current = existing.get("photo_urls") or ([existing["photo_url"]] if existing.get("photo_url") else [])
+        final_urls = current + new_urls
+        updates["photo_urls"] = final_urls
+        updates["photo_url"] = final_urls[0]
 
     result = await db.reviews.update_one({"id": review_id}, {"$set": updates})
     if result.matched_count == 0:
