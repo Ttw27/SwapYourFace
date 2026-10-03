@@ -143,10 +143,13 @@ class TemplateCreate(BaseModel):
 
 class PromptExpandRequest(BaseModel):
     prompt: str
+    style: Optional[str] = "cartoon"
 
 class DesignGenerateRequest(BaseModel):
     prompt: str
     num_images: Optional[int] = 4
+    style: Optional[str] = "cartoon"
+    prompt_is_expanded: Optional[bool] = False
 
 class DesignPublishRequest(BaseModel):
     generation_id: Optional[str] = None
@@ -154,6 +157,22 @@ class DesignPublishRequest(BaseModel):
     name: str
     categories: List[str] = ["stag"]
     is_featured: Optional[bool] = False
+    product_image_url: Optional[str] = None
+    head_placement: Optional[Dict[str, Any]] = None
+    text_fields: Optional[Dict[str, Any]] = None
+
+# Art-style presets for the AI Design Generator. Each one tells Claude (and Ideogram)
+# what the finished artwork should look like. The design is always headless.
+DESIGN_STYLES = {
+    "cartoon": "Bold, flat-colour, high-contrast cartoon illustration like a sticker or screen-print design, thick clean outlines, fun and party-appropriate.",
+    "realistic": "Photorealistic, like a real high-resolution studio photograph of a real person wearing a real costume: true-to-life fabric textures, stitching, materials, natural soft studio lighting and realistic shadows. Not illustrated, not cartoon, not painted.",
+    "comic": "Comic-book style artwork with bold black inking, dynamic shading, halftone dot texture and saturated colours, like a superhero comic panel.",
+    "3d": "Polished 3D render, like a high-end animated film character model: smooth stylised forms, soft global illumination, glossy materials.",
+    "vintage": "Retro vintage screen-print t-shirt artwork, limited colour palette, slightly distressed texture, 70s/80s poster feel.",
+}
+
+def style_description(style: Optional[str]) -> str:
+    return DESIGN_STYLES.get((style or "cartoon").lower(), DESIGN_STYLES["cartoon"])
 
 class HeadCutout(BaseModel):
     model_config = ConfigDict(extra="ignore")
@@ -1145,10 +1164,10 @@ async def expand_design_prompt(data: PromptExpandRequest):
         "detailed prompt for generating a full-body character illustration to be printed on a t-shirt. "
         "The design must NOT include a head or face — the customer's own photo gets composited on top "
         "afterwards — so describe the body, costume, pose and props only, framed from the neck down or "
-        "with the head clearly cropped out of shot. Style: bold, flat-colour, high-contrast illustrated "
-        "artwork like a sticker or screen-print design — fun and party-appropriate, NOT photorealistic, "
-        "NOT generic stock-art. Always specify: transparent background, no text, no watermark, no logos, "
-        "single centered subject, clean bold linework. Reply with ONLY the final prompt text and nothing else — "
+        "with the head clearly cropped out of shot. "
+        f"REQUIRED ART STYLE (describe everything in this style): {style_description(data.style)} "
+        "Avoid generic stock-art. Always specify: transparent background, no text, no watermark, no logos, "
+        "single centered full-body subject from the neck down. Reply with ONLY the final prompt text and nothing else — "
         "no preamble, no quotation marks."
     )
 
@@ -1215,6 +1234,13 @@ async def generate_design(data: DesignGenerateRequest):
 
     num_images = max(1, min(8, data.num_images or 4))
 
+    final_prompt = data.prompt
+    if not data.prompt_is_expanded:
+        final_prompt = (
+            f"{data.prompt}. Full-body costume from the neck down with NO head or face (the head area is empty). "
+            f"Art style: {style_description(data.style)} Transparent background, no text, no logos, single centered subject."
+        )
+
     try:
         resp = requests.post(
             "https://api.ideogram.ai/v1/ideogram-v3/generate-transparent",
@@ -1222,7 +1248,7 @@ async def generate_design(data: DesignGenerateRequest):
             # Ideogram requires multipart/form-data — passing `files` with (None, value)
             # forces requests to multipart-encode plain text fields (no `data=` here).
             files={
-                "prompt": (None, data.prompt),
+                "prompt": (None, final_prompt),
                 "rendering_speed": (None, "DEFAULT"),
                 "num_images": (None, str(num_images)),
                 "magic_prompt": (None, "OFF"),
@@ -1264,7 +1290,8 @@ async def generate_design(data: DesignGenerateRequest):
 
     doc = {
         "id": generation_id,
-        "prompt": data.prompt,
+        "prompt": final_prompt,
+        "style": data.style,
         "images": saved_images,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -1305,7 +1332,9 @@ async def publish_generated_design(data: DesignPublishRequest):
         name=data.name,
         categories=data.categories or ["stag"],
         body_image_url=data.image_url,
-        product_image_url=data.image_url,
+        product_image_url=data.product_image_url or data.image_url,
+        head_placement=data.head_placement,
+        text_fields=data.text_fields,
         is_new=True,
         is_featured=data.is_featured or False,
     )
