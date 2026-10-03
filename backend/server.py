@@ -1680,6 +1680,23 @@ async def get_reviews(approved_only: bool = True):
     reviews = await db.reviews.find(query, {"_id": 0}).sort("created_at", -1).to_list(100)
     return reviews
 
+async def _upload_review_photos(photos: List[UploadFile]) -> List[str]:
+    """Upload any number of review photos to R2 and return their public URLs."""
+    urls = []
+    for photo in photos or []:
+        if not photo or not photo.filename:
+            continue
+        try:
+            contents = await photo.read()
+            if contents:
+                r2_key = f"reviews/{uuid.uuid4()}.jpg"
+                url = upload_to_r2(contents, r2_key, "image/jpeg")
+                if url:
+                    urls.append(url)
+        except Exception as e:
+            logger.error(f"Review photo upload failed: {e}")
+    return urls
+
 @api_router.post("/reviews")
 async def submit_review(
     name: str = Form(...),
@@ -1687,17 +1704,9 @@ async def submit_review(
     rating: int = Form(5),
     location: str = Form(''),
     event: str = Form(''),
-    photo: Optional[UploadFile] = File(None)
+    photos: List[UploadFile] = File(default=[])
 ):
-    photo_url = None
-    if photo and photo.filename:
-        try:
-            contents = await photo.read()
-            if contents:
-                r2_key = f"reviews/{uuid.uuid4()}.jpg"
-                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
-        except Exception as e:
-            logger.error(f"Review photo upload failed: {e}")
+    photo_urls = await _upload_review_photos(photos)
 
     review = {
         "id": str(uuid.uuid4()),
@@ -1706,7 +1715,8 @@ async def submit_review(
         "rating": max(1, min(5, rating)),
         "location": location,
         "event": event,
-        "photo_url": photo_url,
+        "photo_url": photo_urls[0] if photo_urls else None,  # kept for backwards compatibility
+        "photo_urls": photo_urls,
         "verified": False,
         "approved": False,
         "created_at": datetime.now(timezone.utc).isoformat()
@@ -1739,17 +1749,9 @@ async def update_review_with_photo(
     location: str = Form(''),
     event: str = Form(''),
     verified: str = Form('true'),
-    photo: Optional[UploadFile] = File(None)
+    photos: List[UploadFile] = File(default=[])
 ):
-    photo_url = None
-    if photo and photo.filename:
-        try:
-            contents = await photo.read()
-            if contents:
-                r2_key = f"reviews/{uuid.uuid4()}.jpg"
-                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
-        except Exception as e:
-            logger.error(f"Review photo upload failed: {e}")
+    photo_urls = await _upload_review_photos(photos)
 
     updates = {
         "name": name, "text": text,
@@ -1757,8 +1759,10 @@ async def update_review_with_photo(
         "location": location, "event": event,
         "verified": verified.lower() == 'true',
     }
-    if photo_url:
-        updates["photo_url"] = photo_url
+    if photo_urls:
+        # New photos uploaded — they replace the review's existing photo set entirely.
+        updates["photo_url"] = photo_urls[0]
+        updates["photo_urls"] = photo_urls
 
     result = await db.reviews.update_one({"id": review_id}, {"$set": updates})
     if result.matched_count == 0:
@@ -1778,24 +1782,17 @@ async def admin_add_review(
     location: str = Form(''),
     event: str = Form(''),
     verified: str = Form('true'),
-    photo: Optional[UploadFile] = File(None)
+    photos: List[UploadFile] = File(default=[])
 ):
-    photo_url = None
-    if photo and photo.filename:
-        try:
-            contents = await photo.read()
-            if contents:
-                r2_key = f"reviews/{uuid.uuid4()}.jpg"
-                photo_url = upload_to_r2(contents, r2_key, "image/jpeg")
-        except Exception as e:
-            logger.error(f"Review photo upload failed: {e}")
+    photo_urls = await _upload_review_photos(photos)
 
     review = {
         "id": str(uuid.uuid4()),
         "name": name, "text": text,
         "rating": max(1, min(5, rating)),
         "location": location, "event": event,
-        "photo_url": photo_url,
+        "photo_url": photo_urls[0] if photo_urls else None,
+        "photo_urls": photo_urls,
         "verified": verified.lower() == "true",
         "approved": True,
         "created_at": datetime.now(timezone.utc).isoformat()
