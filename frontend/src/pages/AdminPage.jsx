@@ -116,8 +116,10 @@ export default function AdminPage() {
     }
   };
   const [reviewForm, setReviewForm] = useState({ name:'', location:'', event:'', rating:5, text:'', verified:true });
-  const [reviewPhotos, setReviewPhotos] = useState([]);
-  const MAX_REVIEW_PHOTOS = 5;
+  const [reviewPhotos, setReviewPhotos] = useState([]);          // new files to upload
+  const [existingReviewPhotos, setExistingReviewPhotos] = useState([]); // URLs already on the review
+  const MAX_REVIEW_PHOTOS = 10;
+  const getReviewPhotoUrls = (r) => (r?.photo_urls?.length ? r.photo_urls : (r?.photo_url ? [r.photo_url] : []));
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState(null);
@@ -168,6 +170,7 @@ export default function AdminPage() {
       fd.append('event', reviewForm.event || '');
       fd.append('verified', reviewForm.verified ? 'true' : 'false');
       reviewPhotos.forEach(p => fd.append('photos', p));
+      if (editingReview) fd.append('keep_photo_urls', JSON.stringify(existingReviewPhotos));
 
       const url = editingReview
         ? `${API}/admin/reviews/${editingReview.id}/update`
@@ -183,6 +186,7 @@ export default function AdminPage() {
       setEditingReview(null);
       setReviewForm({ name:'', location:'', event:'', rating:5, text:'', verified:true });
       setReviewPhotos([]);
+      setExistingReviewPhotos([]);
       fetchReviews();
     } catch(e) {
       console.error('Save review error:', e);
@@ -751,7 +755,7 @@ export default function AdminPage() {
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <h2 className="font-['Anton'] text-lg text-[#252A34'] tracking-wide">REVIEWS ({reviews.length})</h2>
-              <Button onClick={() => { setEditingReview(null); setReviewForm({ name:'', location:'', event:'', rating:5, text:'', verified:true }); setReviewPhotos([]); setShowReviewForm(true); }}
+              <Button onClick={() => { setEditingReview(null); setReviewForm({ name:'', location:'', event:'', rating:5, text:'', verified:true }); setReviewPhotos([]); setExistingReviewPhotos([]); setShowReviewForm(true); }}
                 className="bg-[#FF2E63] hover:bg-[#E01A4F] text-white rounded-full gap-2">
                 <Plus className="w-4 h-4" /> Add Review
               </Button>
@@ -787,30 +791,38 @@ export default function AdminPage() {
                 </div>
                 <div><Label>Review Text</Label><Textarea value={reviewForm.text} onChange={e=>setReviewForm(f=>({...f,text:e.target.value}))} placeholder="Customer review..." rows={3} className="mt-1"/></div>
                 <div>
-                  <Label className="mb-1 block">Photos (optional, up to {MAX_REVIEW_PHOTOS})</Label>
-                  {editingReview && (editingReview.photo_urls?.length || editingReview.photo_url) && reviewPhotos.length === 0 && (
-                    <p className="text-xs text-gray-400 mb-2">
-                      This review already has {editingReview.photo_urls?.length || 1} photo(s). Uploading new ones below will replace them all.
-                    </p>
-                  )}
-                  {reviewPhotos.length > 0 && (
-                    <div className="grid grid-cols-4 gap-2 mb-2">
-                      {reviewPhotos.map((p, i) => (
-                        <div key={i} className="relative rounded-lg overflow-hidden aspect-square">
-                          <img src={URL.createObjectURL(p)} alt={`preview ${i+1}`} className="w-full h-full object-cover"/>
-                          <button onClick={()=>setReviewPhotos(ps=>ps.filter((_,idx)=>idx!==i))} className="absolute top-1 right-1 p-0.5 bg-red-500 text-white rounded-full"><X className="w-3 h-3"/></button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  {reviewPhotos.length < MAX_REVIEW_PHOTOS && (
-                    <label className="flex items-center gap-3 p-3 border-2 border-dashed border-gray-200 rounded-xl cursor-pointer hover:border-[#FF2E63]">
-                      <Upload className="w-4 h-4 text-gray-400"/>
-                      <span className="text-sm text-gray-500">Upload customer photo(s)</span>
-                      <input type="file" accept="image/*" multiple className="hidden"
-                        onChange={e=>{ setReviewPhotos(ps=>[...ps, ...Array.from(e.target.files||[])].slice(0,MAX_REVIEW_PHOTOS)); e.target.value=''; }}/>
-                    </label>
-                  )}
+                  <Label className="mb-1 block">Photos ({existingReviewPhotos.length + reviewPhotos.length}/{MAX_REVIEW_PHOTOS}) — first photo is the cover</Label>
+                  <div className="grid grid-cols-3 sm:grid-cols-5 gap-2">
+                    {existingReviewPhotos.map((url, i) => (
+                      <div key={`e${i}`} className="relative rounded-lg overflow-hidden aspect-square border border-gray-200 group">
+                        <a href={url} target="_blank" rel="noreferrer">
+                          <img src={url} alt={`photo ${i+1}`} className="w-full h-full object-cover" crossOrigin="anonymous"/>
+                        </a>
+                        {i === 0 && <span className="absolute bottom-1 left-1 text-[10px] font-bold bg-[#252A34] text-white px-1.5 py-0.5 rounded">COVER</span>}
+                        <button type="button" title="Remove photo"
+                          onClick={()=>setExistingReviewPhotos(ps=>ps.filter((_,idx)=>idx!==i))}
+                          className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full shadow"><X className="w-3 h-3"/></button>
+                      </div>
+                    ))}
+                    {reviewPhotos.map((p, i) => (
+                      <div key={`n${i}`} className="relative rounded-lg overflow-hidden aspect-square border-2 border-[#08D9D6]">
+                        <img src={URL.createObjectURL(p)} alt={`new ${i+1}`} className="w-full h-full object-cover"/>
+                        <span className="absolute bottom-1 left-1 text-[10px] font-bold bg-[#08D9D6] text-[#252A34] px-1.5 py-0.5 rounded">NEW</span>
+                        <button type="button" title="Remove photo"
+                          onClick={()=>setReviewPhotos(ps=>ps.filter((_,idx)=>idx!==i))}
+                          className="absolute top-1 right-1 p-1 bg-red-500 text-white rounded-full shadow"><X className="w-3 h-3"/></button>
+                      </div>
+                    ))}
+                    {existingReviewPhotos.length + reviewPhotos.length < MAX_REVIEW_PHOTOS && (
+                      <label className="flex flex-col items-center justify-center gap-1 aspect-square border-2 border-dashed border-gray-300 rounded-lg cursor-pointer hover:border-[#FF2E63] hover:bg-[#FF2E63]/5 transition-colors">
+                        <Plus className="w-5 h-5 text-gray-400"/>
+                        <span className="text-xs text-gray-500">Add photos</span>
+                        <input type="file" accept="image/*" multiple className="hidden"
+                          onChange={e=>{ const room = MAX_REVIEW_PHOTOS - existingReviewPhotos.length; setReviewPhotos(ps=>[...ps, ...Array.from(e.target.files||[])].slice(0, room)); e.target.value=''; }}/>
+                      </label>
+                    )}
+                  </div>
+                  <p className="text-xs text-gray-400 mt-2">Click a photo to view it full size. Removed photos are only deleted when you press Update Review.</p>
                 </div>
                 <label className="flex items-center gap-2 cursor-pointer">
                   <input type="checkbox" checked={reviewForm.verified} onChange={e=>setReviewForm(f=>({...f,verified:e.target.checked}))} className="rounded"/>
@@ -859,7 +871,7 @@ export default function AdminPage() {
                         className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${review.approved ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
                         {review.approved ? 'Live' : 'Hidden'}
                       </button>
-                      <button onClick={() => { setEditingReview(review); setReviewForm({ name:review.name, location:review.location||'', event:review.event||'', rating:review.rating, text:review.text, verified:review.verified||false }); setReviewPhotos([]); setShowReviewForm(true); }}
+                      <button onClick={() => { setEditingReview(review); setReviewForm({ name:review.name, location:review.location||'', event:review.event||'', rating:review.rating, text:review.text, verified:review.verified||false }); setReviewPhotos([]); setExistingReviewPhotos(getReviewPhotoUrls(review)); setShowReviewForm(true); }}
                         className="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500"><Edit2 className="w-4 h-4"/></button>
                       <button onClick={() => handleDeleteReview(review.id)} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400"><Trash2 className="w-4 h-4"/></button>
                     </div>
