@@ -1,5 +1,5 @@
 from fastapi import FastAPI, APIRouter, UploadFile, File, Form, HTTPException, BackgroundTasks
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -169,6 +169,7 @@ DESIGN_STYLES = {
     "comic": "Comic-book style artwork with bold black inking, dynamic shading, halftone dot texture and saturated colours, like a superhero comic panel.",
     "3d": "Polished 3D render, like a high-end animated film character model: smooth stylised forms, soft global illumination, glossy materials.",
     "vintage": "Retro vintage screen-print t-shirt artwork, limited colour palette, slightly distressed texture, 70s/80s poster feel.",
+    "caricature": "Caricature illustration: a small, short, chunky body with exaggerated comedic proportions (stubby limbs, oversized hands and feet), drawn so a big oversized head will sit on top, painted caricature-artist style with bold outlines and bright colours.",
 }
 
 def style_description(style: Optional[str]) -> str:
@@ -1349,6 +1350,52 @@ async def publish_generated_design(data: DesignPublishRequest):
     return template_obj
 
 
+# Saved sample faces (male/female) for AI Designer mockups. Stored in the config
+# collection rather than on disk (Railway wipes disk on redeploy) and served from
+# here so canvas export isn't blocked by r2.dev CORS.
+SAMPLE_FACE_SLOTS = ("male", "female")
+
+@api_router.get("/admin/sample-faces")
+async def list_sample_faces():
+    faces = {slot: None for slot in SAMPLE_FACE_SLOTS}
+    async for doc in db.config.find({"key": {"$in": [f"sample_face_{s}" for s in SAMPLE_FACE_SLOTS]}}, {"key": 1, "updated_at": 1}):
+        slot = doc["key"].replace("sample_face_", "")
+        faces[slot] = f"/api/admin/sample-faces/{slot}.png?v={doc.get('updated_at', '')}"
+    return faces
+
+
+@api_router.get("/admin/sample-faces/{slot}.png")
+async def get_sample_face(slot: str):
+    doc = await db.config.find_one({"key": f"sample_face_{slot}"})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Sample face not set")
+    return Response(content=bytes(doc["data"]), media_type="image/png",
+                    headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=86400"})
+
+
+@api_router.post("/admin/sample-faces/{slot}")
+async def save_sample_face(slot: str, file: UploadFile = File(...)):
+    if slot not in SAMPLE_FACE_SLOTS:
+        raise HTTPException(status_code=400, detail="Slot must be male or female")
+    try:
+        img = Image.open(io.BytesIO(await file.read())).convert("RGBA")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid image file")
+    bbox = img.getbbox()
+    if bbox:
+        img = img.crop(bbox)
+    img.thumbnail((800, 800))
+    buf = io.BytesIO()
+    img.save(buf, "PNG")
+    updated_at = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    await db.config.update_one(
+        {"key": f"sample_face_{slot}"},
+        {"$set": {"key": f"sample_face_{slot}", "data": buf.getvalue(), "updated_at": updated_at}},
+        upsert=True,
+    )
+    return {"url": f"/api/admin/sample-faces/{slot}.png?v={updated_at}"}
+
+
 @api_router.get("/admin/design-generator/generations")
 async def list_design_generations():
     """List recent AI design generations (drafts + published)."""
@@ -1795,7 +1842,7 @@ async def update_review(review_id: str, updates: dict):
 async def update_review_with_photo(
     review_id: str,
     name: str = Form(...),
-    text: str = Form(...),
+    text: str = Form(''),
     rating: int = Form(5),
     location: str = Form(''),
     event: str = Form(''),
@@ -1842,7 +1889,7 @@ async def delete_review(review_id: str):
 @api_router.post("/admin/reviews")
 async def admin_add_review(
     name: str = Form(...),
-    text: str = Form(...),
+    text: str = Form(''),
     rating: int = Form(5),
     location: str = Form(''),
     event: str = Form(''),

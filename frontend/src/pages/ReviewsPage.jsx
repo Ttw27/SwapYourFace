@@ -119,14 +119,14 @@ const ReviewCard = ({ review, delay = 0, onImageClick }) => {
         <div className="flex items-start justify-between mb-2">
           <div>
             <p className="font-bold text-[#252A34]">{review.name}</p>
-            <p className="text-xs text-gray-400">{review.location}{review.event ? ` · ${review.event}` : ''}</p>
+            <p className="text-xs text-gray-400">{[review.event, review.location].filter(Boolean).join(' · ')}</p>
           </div>
           {review.verified && (
             <span className="text-xs bg-green-50 text-green-700 px-2 py-0.5 rounded-full font-medium border border-green-200 flex-shrink-0">✓ Verified</span>
           )}
         </div>
         <StarRating rating={review.rating} />
-        <p className="text-gray-600 text-sm mt-3 flex-1 leading-relaxed">"{review.text}"</p>
+        {review.text?.trim() && <p className="text-gray-600 text-sm mt-3 flex-1 leading-relaxed">"{review.text}"</p>}
       </div>
     </motion.div>
   );

@@ -23,6 +23,7 @@ const STYLES = [
   { id: 'comic', label: 'Comic', hint: 'Inked comic-book look' },
   { id: '3d', label: '3D', hint: 'Animated-film render' },
   { id: 'vintage', label: 'Vintage', hint: 'Retro screen print' },
+  { id: 'caricature', label: 'Caricature', hint: 'Big head, small body' },
 ];
 
 const FONTS = [
@@ -80,6 +81,9 @@ export default function AIDesignGenerator() {
   const [bodyImg, setBodyImg] = useState(null);
   const [headImg, setHeadImg] = useState(null);
   const [headLoading, setHeadLoading] = useState(false);
+  const [headSrc, setHeadSrc] = useState(null); // URL of the current face, so it can be saved as a sample
+  const [sampleFaces, setSampleFaces] = useState({ male: null, female: null });
+  const [savingSample, setSavingSample] = useState(null);
   const [autoCutout, setAutoCutout] = useState(true);
   const [head, setHead] = useState({ x: 200, y: 110, width: 110, rotation: 0 });
   const [line1, setLine1] = useState({ text: 'NAME', x: 200, y: 400, size: 46 });
@@ -110,6 +114,7 @@ export default function AIDesignGenerator() {
     setPrintDataUrl(null);
     setBodyImg(null);
     setHeadImg(null);
+    setHeadSrc(null);
     historyRef.current = [];
     setCanUndo(false);
   };
@@ -377,6 +382,22 @@ export default function AIDesignGenerator() {
   }, [step, drawMockup, fontString, line1.size, line2.size]);
 
   // ── Sample face (optionally cut out with the same service customers use) ──
+  useEffect(() => {
+    if (step !== 'mockup') return;
+    fetch(`${API}/admin/sample-faces`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(data => { if (data) setSampleFaces(data); })
+      .catch(() => {});
+  }, [step]);
+
+  const placeFace = async (url) => {
+    const img = await loadImage(url);
+    setHeadImg(img);
+    setHeadSrc(url);
+    const r = bodyRect();
+    setHead(h => ({ ...h, x: FRAME_W / 2, y: r ? Math.round(r.y + 55) : 110, width: 110 }));
+  };
+
   const handleFaceUpload = async (file) => {
     if (!file) return;
     setHeadLoading(true);
@@ -396,15 +417,42 @@ export default function AIDesignGenerator() {
       } else {
         url = URL.createObjectURL(file);
       }
-      const img = await loadImage(url);
-      setHeadImg(img);
-      const r = bodyRect();
-      setHead(h => ({ ...h, x: FRAME_W / 2, y: r ? Math.round(r.y + 55) : 110, width: 110 }));
+      await placeFace(url);
       toast.success('Face added — drag it into place');
     } catch (e) {
       toast.error(e.message || 'Could not add that face');
     } finally {
       setHeadLoading(false);
+    }
+  };
+
+  const handleUseSample = async (slot) => {
+    setHeadLoading(true);
+    try {
+      await placeFace(absUrl(sampleFaces[slot]));
+    } catch {
+      toast.error('Could not load the sample face');
+    } finally {
+      setHeadLoading(false);
+    }
+  };
+
+  const handleSaveSample = async (slot) => {
+    if (!headSrc) return;
+    setSavingSample(slot);
+    try {
+      const blob = await (await fetch(headSrc)).blob();
+      const fd = new FormData();
+      fd.append('file', blob, `${slot}.png`);
+      const res = await fetch(`${API}/admin/sample-faces/${slot}`, { method: 'POST', body: fd });
+      if (!res.ok) throw new Error();
+      const { url } = await res.json();
+      setSampleFaces(prev => ({ ...prev, [slot]: url }));
+      toast.success(`Saved as the ${slot} sample face`);
+    } catch {
+      toast.error('Could not save the sample face');
+    } finally {
+      setSavingSample(null);
     }
   };
 
@@ -542,7 +590,7 @@ export default function AIDesignGenerator() {
 
             <div>
               <Label className="text-xs font-bold text-gray-500 tracking-wide">ART STYLE</Label>
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mt-1">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-1">
                 {STYLES.map(s => (
                   <button key={s.id} onClick={() => handleStyleChange(s.id)}
                     className={`text-left p-3 rounded-xl border-2 transition-colors ${style === s.id ? 'border-[#FF2E63] bg-[#FF2E63]/5' : 'border-gray-200 hover:border-gray-300'}`}>
@@ -679,6 +727,17 @@ export default function AIDesignGenerator() {
                 {/* Face */}
                 <div className="bg-gray-50 rounded-xl p-4 space-y-3">
                   <p className="text-xs font-bold text-gray-500 tracking-wide flex items-center gap-1"><User className="w-4 h-4" /> SAMPLE FACE</p>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {['male', 'female'].map(slot => (
+                      <Button key={slot} onClick={() => handleUseSample(slot)} disabled={!sampleFaces[slot] || headLoading}
+                        size="sm" className="rounded-full bg-[#252A34] hover:bg-[#1a1e26] text-white capitalize">
+                        Use {slot} sample
+                      </Button>
+                    ))}
+                    {!sampleFaces.male && !sampleFaces.female && (
+                      <span className="text-xs text-gray-400">Upload a face below, then save it as a sample to reuse it.</span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-3 flex-wrap">
                     <label className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-gray-300 bg-white cursor-pointer hover:border-[#FF2E63] text-sm font-medium">
                       {headLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
@@ -690,8 +749,19 @@ export default function AIDesignGenerator() {
                       <input type="checkbox" checked={autoCutout} onChange={(e) => setAutoCutout(e.target.checked)} />
                       Auto cut out face
                     </label>
-                    {headImg && <button onClick={() => setHeadImg(null)} className="text-sm text-red-500 hover:underline">Remove face</button>}
+                    {headImg && <button onClick={() => { setHeadImg(null); setHeadSrc(null); }} className="text-sm text-red-500 hover:underline">Remove face</button>}
                   </div>
+                  {headImg && headSrc && (
+                    <div className="flex items-center gap-3 flex-wrap text-sm">
+                      <span className="text-xs text-gray-500">Keep this face for next time:</span>
+                      {['male', 'female'].map(slot => (
+                        <button key={slot} onClick={() => handleSaveSample(slot)} disabled={!!savingSample}
+                          className="text-[#FF2E63] font-medium hover:underline disabled:opacity-50">
+                          {savingSample === slot ? 'Saving…' : `Save as ${slot} sample`}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   {headImg && (
                     <div className="grid grid-cols-2 gap-4">
                       <div>
